@@ -11,24 +11,21 @@ import psycopg2
 import psycopg2.extras
 import streamlit as st
 
-# ==================== 1. إعداد الصفحة والتصميم الخاص (Custom CSS) ====================
-st.set_page_config(
-    page_title="Analytics Dashboard | Pro Trading",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
-
-# حقن Custom CSS لتحسين المظهر بالكامل
+# حقن Custom CSS شامل لفرض تباين الألوان ووضوح النصوص
 st.markdown("""
     <style>
-    /* خلفية التطبيق العامة */
-    .stApp {
-        background-color: #0b0e11;
-        color: #eaecef;
+    /* فرض اللون الداكن والخط الأبيض على التطبيق بأكمله */
+    html, body, [class*="css"], .stApp {
+        background-color: #0b0e11 !important;
+        color: #ffffff !important;
     }
     
-    /* اخفاء القوائم الهامشية والتذييل الافتراضي */
+    /* فرض لون أبيض للنصوص داخل العناوين والفقرات والبطاقات */
+    h1, h2, h3, h4, h5, h6, p, div, span, label {
+        color: #ffffff !important;
+    }
+
+    /* إخفاء القوائم الهامشية والتذييل الافتراضي */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
@@ -36,14 +33,14 @@ st.markdown("""
     /* تصميم التبويبات (Tabs) */
     .stTabs [data-baseweb="tab-list"] {
         gap: 12px;
-        background-color: #181a20;
+        background-color: #181a20 !important;
         padding: 8px;
         border-radius: 12px;
         border: 1px solid #2b313a;
     }
     .stTabs [data-baseweb="tab"] {
         border-radius: 8px;
-        color: #848e9c;
+        color: #848e9c !important;
         font-weight: 600;
         padding: 8px 16px;
     }
@@ -52,48 +49,42 @@ st.markdown("""
         color: #f0b90b !important;
     }
 
-    /* تصميم بطاقات المؤشرات (Metric Cards) */
+    /* تصميم بطاقات المؤشرات العلوي (Metric Cards) */
     .metric-card {
         background: linear-gradient(135deg, #181a20 0%, #1e2329 100%);
         border: 1px solid #2b313a;
         border-radius: 12px;
         padding: 18px;
         box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        transition: transform 0.2s ease, border-color 0.2s ease;
-    }
-    .metric-card:hover {
-        transform: translateY(-2px);
-        border-color: #f0b90b;
     }
     .metric-title {
         font-size: 13px;
-        color: #848e9c;
+        color: #848e9c !important;
         margin-bottom: 6px;
     }
     .metric-value {
         font-size: 22px;
         font-weight: 700;
-        color: #f0b90b;
+        color: #f0b90b !important;
     }
 
-    /* تصميم بطاقات التوصيات (Glassmorphism Cards) */
+    /* تصميم بطاقات التوصيات (Signal Cards) */
     .signal-card {
-        background: rgba(30, 35, 41, 0.7);
-        backdrop-filter: blur(10px);
+        background: #181a20 !important;
         border-radius: 14px;
         padding: 20px;
         margin-bottom: 15px;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
     }
     .buy-border { border: 1px solid #0ecb81; border-right: 6px solid #0ecb81; }
     .sell-border { border: 1px solid #f6465d; border-right: 6px solid #f6465d; }
     .neutral-border { border: 1px solid #848e9c; border-right: 6px solid #848e9c; }
 
-    /* تحسين خيارات القوائم */
-    .stSelectbox div[data-baseweb="select"] {
-        background-color: #181a20;
-        border-color: #2b313a;
-        color: #eaecef;
+    /* ضبط ألوان القوائم المنسدلة ومدخلات النصوص */
+    .stSelectbox div[data-baseweb="select"], div[data-baseweb="input"] {
+        background-color: #181a20 !important;
+        border-color: #2b313a !important;
+        color: #ffffff !important;
         border-radius: 8px;
     }
     </style>
