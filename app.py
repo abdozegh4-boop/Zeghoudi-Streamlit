@@ -228,8 +228,12 @@ def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 300) -> pd
     )
     df = pd.DataFrame(rows)
     if not df.empty and "created_at" in df.columns:
-        # تحويل التوقيت من UTC إلى GMT+1
-        df["created_at"] = pd.to_datetime(df["created_at"]).dt.tz_convert("Etc/GMT-1")
+        # تحويل التوقيت إلى GMT+1 ثم تجريده من tz لفرض الوقت المحلي على Plotly
+        df["created_at"] = (
+            pd.to_datetime(df["created_at"])
+            .dt.tz_convert("Africa/Algiers")
+            .dt.tz_localize(None)
+        )
     return df
 
 def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
@@ -246,14 +250,17 @@ def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300
 
     points = []
     for row in signal_rows:
-        # تحويل وقت الإشارة إلى GMT+1
-        sig_time = pd.to_datetime(row["created_at"]).tz_convert("Etc/GMT-1")
+        # تحويل وقت الإشارة إلى توقيت الجزائر (GMT+1) وتجريده من tz
+        sig_time = (
+            pd.to_datetime(row["created_at"])
+            .tz_convert("Africa/Algiers")
+            .tz_localize(None)
+        )
         
         for card in parse_quick_signal_blocks(row["report_text"]):
             if card["symbol"] != symbol:
                 continue
             if not price_df.empty:
-                # حساب أقرب سعر زمني للإشارة بناءً على التوقيت المعدل
                 nearest_idx = (price_df["created_at"] - sig_time).abs().idxmin()
                 nearest_row = price_df.loc[nearest_idx]
                 points.append({
@@ -263,7 +270,6 @@ def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300
                     "direction": card["direction"],
                 })
     return price_df, points
-
 
 # ==================== 3. الهيكل الرئيسي للواجهة ====================
 
