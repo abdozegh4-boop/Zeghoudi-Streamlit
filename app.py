@@ -453,11 +453,21 @@ with tab_compare:
     comp_tf = st.selectbox("الإطار الزمني للمقارنة:", TIMEFRAMES, key="cp_tf")
     
     rows = run_query(
-        "SELECT DISTINCT ON (symbol) symbol, last_price, rsi_14, ema_20, ema_50, atr_14, created_at FROM technical_snapshots WHERE timeframe = %s ORDER BY symbol, created_at DESC",
+        """
+        SELECT DISTINCT ON (symbol) symbol, last_price, rsi_14, ema_20, ema_50, atr_14, created_at 
+        FROM technical_snapshots 
+        WHERE timeframe = %s 
+        ORDER BY symbol, created_at DESC
+        """,
         (comp_tf,)
     )
     if rows:
         df_cp = pd.DataFrame(rows)
+        
+        # تحويل وقت اللقطة في جدول المقارنة إلى GMT+1 وصياغته بشكل واضح
+        if "created_at" in df_cp.columns:
+            df_cp["created_at"] = pd.to_datetime(df_cp["created_at"]) + pd.Timedelta(hours=1)
+            df_cp["created_at"] = df_cp["created_at"].dt.strftime("%Y-%m-%d %H:%M")
         
         def style_rsi(val):
             if val >= 70:
