@@ -269,12 +269,14 @@ def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300
     return price_df, points
 
 def fetch_latest_signal_cards() -> List[Dict[str, str]]:
+    # جلب أحدث 15 تقرير إشارات سريعة مرتبة زمنياً
     rows = run_query(
         """
-        SELECT DISTINCT ON (symbols_key) symbols_key, report_text, created_at
+        SELECT report_text, created_at
         FROM ai_reports
         WHERE analysis_type = 'quick_signals'
-        ORDER BY symbols_key, created_at DESC
+        ORDER BY created_at DESC
+        LIMIT 15
         """
     )
     cards: List[Dict[str, str]] = []
@@ -282,6 +284,7 @@ def fetch_latest_signal_cards() -> List[Dict[str, str]]:
     for row in rows:
         card_time = (pd.to_datetime(row["created_at"]) + pd.Timedelta(hours=1)) if row["created_at"] else None
         for card in parse_quick_signal_blocks(row["report_text"]):
+            # عرض أحدث إشارة واحدة فقط لكل زوج
             if card["symbol"] in seen_symbols:
                 continue
             seen_symbols.add(card["symbol"])
