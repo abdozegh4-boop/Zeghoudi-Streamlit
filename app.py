@@ -116,6 +116,30 @@ def get_conn():
         kwargs["sslmode"] = "require"
     return psycopg2.connect(**kwargs)
 
+def ensure_indexes_exist():
+    """إنشاء الفهارس تلقائياً داخل قاعدة البيانات لضمان السرعة الفائقة لعيام الاستعلام"""
+    queries = [
+        """
+        CREATE INDEX IF NOT EXISTS idx_snapshots_sym_tf_created 
+        ON technical_snapshots (symbol, timeframe, created_at DESC);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_ai_reports_type_sym 
+        ON ai_reports (analysis_type, symbols_key, created_at DESC);
+        """
+    ]
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                for q in queries:
+                    cur.execute(q)
+            conn.commit()
+    except Exception:
+        pass  # التجاوز عند عدم توفر صلاحيات الكتابة أو وجود الفهرس مسبقاً
+
+# تنفيذ التأكد من الفهارس تلقائياً عند بدء تشغيل الكود
+ensure_indexes_exist()
+
 def run_query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
     try:
         with get_conn() as conn:
@@ -195,26 +219,7 @@ def parse_quick_signal_blocks(report_text: str) -> List[Dict[str, str]]:
         })
     return results
 
-def fetch_latest_signal_cards() -> List[Dict[str, str]]:
-    rows = run_query(
-        """
-        SELECT DISTINCT ON (symbols_key) symbols_key, report_text, created_at
-        FROM ai_reports
-        WHERE analysis_type = 'quick_signals'
-        ORDER BY symbols_key, created_at DESC
-        """
-    )
-    cards: List[Dict[str, str]] = []
-    seen_symbols = set()
-    for row in rows:
-        for card in parse_quick_signal_blocks(row["report_text"]):
-            if card["symbol"] in seen_symbols:
-                continue
-            seen_symbols.add(card["symbol"])
-            card["updated_at"] = row["created_at"].strftime("%Y-%m-%d %H:%M") if row["created_at"] else "-"
-            cards.append(card)
-    return cards
-
+@st.cache_data(ttl=15)
 def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 300) -> pd.DataFrame:
     rows = run_query(
         """
