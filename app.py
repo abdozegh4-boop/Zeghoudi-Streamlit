@@ -228,12 +228,8 @@ def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 300) -> pd
     )
     df = pd.DataFrame(rows)
     if not df.empty and "created_at" in df.columns:
-        # تحويل التوقيت إلى GMT+1 ثم تجريده من tz لفرض الوقت المحلي على Plotly
-        df["created_at"] = (
-            pd.to_datetime(df["created_at"])
-            .dt.tz_convert("Africa/Algiers")
-            .dt.tz_localize(None)
-        )
+        # إضافة ساعة واحدة (+1 Hour) للتوافق التام مع GMT+1
+        df["created_at"] = pd.to_datetime(df["created_at"]) + pd.Timedelta(hours=1)
     return df
 
 def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
@@ -250,12 +246,8 @@ def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300
 
     points = []
     for row in signal_rows:
-        # تحويل وقت الإشارة إلى توقيت الجزائر (GMT+1) وتجريده من tz
-        sig_time = (
-            pd.to_datetime(row["created_at"])
-            .tz_convert("Africa/Algiers")
-            .tz_localize(None)
-        )
+        # تحويل وقت الإشارة إلى توقيت GMT+1
+        sig_time = pd.to_datetime(row["created_at"]) + pd.Timedelta(hours=1)
         
         for card in parse_quick_signal_blocks(row["report_text"]):
             if card["symbol"] != symbol:
@@ -270,6 +262,27 @@ def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300
                     "direction": card["direction"],
                 })
     return price_df, points
+
+def fetch_latest_signal_cards() -> List[Dict[str, str]]:
+    rows = run_query(
+        """
+        SELECT DISTINCT ON (symbols_key) symbols_key, report_text, created_at
+        FROM ai_reports
+        WHERE analysis_type = 'quick_signals'
+        ORDER BY symbols_key, created_at DESC
+        """
+    )
+    cards: List[Dict[str, str]] = []
+    seen_symbols = set()
+    for row in rows:
+        card_time = (pd.to_datetime(row["created_at"]) + pd.Timedelta(hours=1)) if row["created_at"] else None
+        for card in parse_quick_signal_blocks(row["report_text"]):
+            if card["symbol"] in seen_symbols:
+                continue
+            seen_symbols.add(card["symbol"])
+            card["updated_at"] = card_time.strftime("%Y-%m-%d %H:%M") if card_time is not None else "-"
+            cards.append(card)
+    return cards
 
 # ==================== 3. الهيكل الرئيسي للواجهة ====================
 
