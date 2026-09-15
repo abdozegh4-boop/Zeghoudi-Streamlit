@@ -11,26 +11,30 @@ import psycopg2
 import psycopg2.extras
 import streamlit as st
 
-# حقن Custom CSS شامل لفرض تباين الألوان ووضوح النصوص
+# ==================== 1. إعداد الصفحة والتصميم الخاص (Custom CSS) ====================
+st.set_page_config(
+    page_title="Analytics Dashboard | Pro Trading",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# حقن Custom CSS لضمان وضوح الألوان وتباين النصوص
 st.markdown("""
     <style>
-    /* فرض اللون الداكن والخط الأبيض على التطبيق بأكمله */
     html, body, [class*="css"], .stApp {
         background-color: #0b0e11 !important;
         color: #ffffff !important;
     }
     
-    /* فرض لون أبيض للنصوص داخل العناوين والفقرات والبطاقات */
     h1, h2, h3, h4, h5, h6, p, div, span, label {
         color: #ffffff !important;
     }
 
-    /* إخفاء القوائم الهامشية والتذييل الافتراضي */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
 
-    /* تصميم التبويبات (Tabs) */
     .stTabs [data-baseweb="tab-list"] {
         gap: 12px;
         background-color: #181a20 !important;
@@ -49,7 +53,6 @@ st.markdown("""
         color: #f0b90b !important;
     }
 
-    /* تصميم بطاقات المؤشرات العلوي (Metric Cards) */
     .metric-card {
         background: linear-gradient(135deg, #181a20 0%, #1e2329 100%);
         border: 1px solid #2b313a;
@@ -68,7 +71,6 @@ st.markdown("""
         color: #f0b90b !important;
     }
 
-    /* تصميم بطاقات التوصيات (Signal Cards) */
     .signal-card {
         background: #181a20 !important;
         border-radius: 14px;
@@ -80,7 +82,6 @@ st.markdown("""
     .sell-border { border: 1px solid #f6465d; border-right: 6px solid #f6465d; }
     .neutral-border { border: 1px solid #848e9c; border-right: 6px solid #848e9c; }
 
-    /* ضبط ألوان القوائم المنسدلة ومدخلات النصوص */
     .stSelectbox div[data-baseweb="select"], div[data-baseweb="input"] {
         background-color: #181a20 !important;
         border-color: #2b313a !important;
@@ -214,7 +215,7 @@ def fetch_latest_signal_cards() -> List[Dict[str, str]]:
             cards.append(card)
     return cards
 
-def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
+def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 300) -> pd.DataFrame:
     rows = run_query(
         """
         SELECT last_price, rsi_14, ema_20, ema_50, created_at
@@ -227,10 +228,38 @@ def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 200) -> pd
     )
     return pd.DataFrame(rows)
 
+def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
+    price_df = fetch_indicator_history(symbol, timeframe, limit)
+    signal_rows = run_query(
+        """
+        SELECT report_text, created_at
+        FROM ai_reports
+        WHERE analysis_type = 'quick_signals' AND symbols LIKE %s
+        ORDER BY created_at ASC
+        """,
+        (f"%{symbol}%",)
+    )
+
+    points = []
+    for row in signal_rows:
+        for card in parse_quick_signal_blocks(row["report_text"]):
+            if card["symbol"] != symbol:
+                continue
+            if not price_df.empty:
+                # إيجاد أقرب نقطة زمنية وسعر لتحديد موقعه على الرسم البياني
+                nearest_idx = (price_df["created_at"] - row["created_at"]).abs().idxmin()
+                nearest_row = price_df.loc[nearest_idx]
+                points.append({
+                    "x": row["created_at"],
+                    "y": float(nearest_row["last_price"]),
+                    "emoji": card["emoji"],
+                    "direction": card["direction"],
+                })
+    return price_df, points
+
 
 # ==================== 3. الهيكل الرئيسي للواجهة ====================
 
-# الهيدر الاحترافي
 st.markdown("""
     <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0 25px 0;">
         <div>
@@ -243,7 +272,7 @@ st.markdown("""
 SYMBOLS = get_known_symbols()
 TIMEFRAMES = get_known_timeframes()
 
-# شريط الحالات العلوي (Top Header Metrics)
+# شريط الحالات العلوي
 status = fetch_system_status()
 if status.get("db_ok"):
     c1, c2, c3, c4 = st.columns(4)
@@ -261,8 +290,9 @@ if status.get("db_ok"):
 st.markdown("<br>", unsafe_allow_html=True)
 
 # التبويبات الرسمية
-tab_signals, tab_charts, tab_compare, tab_ai = st.tabs([
+tab_signals, tab_points, tab_charts, tab_compare, tab_ai = st.tabs([
     "🎯 التوصيات الحية",
+    "📍 نقاط التوصيات على السعر",
     "📈 الرسم البياني المدمج",
     "📊 مقارنة الأزواج",
     "🤖 تقارير AI المخزنة"
@@ -301,7 +331,62 @@ with tab_signals:
     else:
         st.info("لا توجد إشارات حية مخزنة حالياً.")
 
-# ----- TAB 2: الشارت المدمج الاحترافي (Combined Chart) -----
+# ----- TAB 2: نقاط التوصيات الملونة على مسار السعر والزمن -----
+with tab_points:
+    st.subheader("تتبع نقاط الإشارات الصادرة على مسار السعر والزمن")
+    col_p1, col_p2 = st.columns(2)
+    p_sym = col_p1.selectbox("اختر الزوج:", SYMBOLS, key="pts_sym")
+    p_tf = col_p2.selectbox("اختر الإطار الزمني:", TIMEFRAMES, key="pts_tf")
+
+    price_df, points = fetch_price_with_signal_points(p_sym, p_tf)
+    if not price_df.empty:
+        fig_pts = go.Figure()
+
+        # 1. رسم خط السعر المباشر عبر الزمن
+        fig_pts.add_trace(go.Scatter(
+            x=price_df["created_at"],
+            y=price_df["last_price"],
+            name="خط السعر",
+            line=dict(color="#ffffff", width=2),
+            hoverinfo="x+y"
+        ))
+
+        # 2. إرجاع وإسقاط نقاط التوصيات الملونة (شراء / بيع / حياد)
+        color_map = {"🟢": "#0ecb81", "🔴": "#f6465d", "⚪": "#848e9c"}
+        for emoji, label in [("🟢", "إشارة شراء (LONG)"), ("🔴", "إشارة بيع (SHORT)"), ("⚪", "إشارة حياد")]:
+            pts = [p for p in points if p["emoji"] == emoji]
+            if pts:
+                fig_pts.add_trace(go.Scatter(
+                    x=[p["x"] for p in pts],
+                    y=[p["y"] for p in pts],
+                    mode="markers",
+                    name=label,
+                    marker=dict(
+                        color=color_map[emoji],
+                        size=14,
+                        symbol="circle",
+                        line=dict(width=2, color="#000000")
+                    ),
+                    hoverinfo="text",
+                    text=[f"إشارة {label} عند سعر {p['y']}" for p in pts]
+                ))
+
+        fig_pts.update_layout(
+            title=f"خريطة التوصيات الصادرة لـ {p_sym} ({p_tf})",
+            xaxis_title="الزمن (Time)",
+            yaxis_title="السعر (Price)",
+            template="plotly_dark",
+            paper_bgcolor="#181a20",
+            plot_bgcolor="#181a20",
+            height=550,
+            margin=dict(l=10, r=10, t=50, b=10),
+            legend=dict(orientation="h", y=1.05, x=0.1)
+        )
+        st.plotly_chart(fig_pts, use_container_width=True)
+    else:
+        st.warning("لا توجد بيانات لقطات سعر كافية لعرض الشارت.")
+
+# ----- TAB 3: الشارت المدمج الاحترافي (Combined Chart) -----
 with tab_charts:
     st.subheader("التحليل الفني الشامل وحركة السعر")
     col_a, col_b = st.columns([1, 1])
@@ -310,7 +395,6 @@ with tab_charts:
     
     df_chart = fetch_indicator_history(s_sym, s_tf)
     if not df_chart.empty:
-        # إنشاء شارت مدمج بمحورين رأسيين (Subplots)
         fig = make_subplots(
             rows=2, cols=1, 
             shared_xaxes=True, 
@@ -319,15 +403,11 @@ with tab_charts:
             subplot_titles=(f"سعر {s_sym} ومتوسطات EMA", "مؤشر القوة النسبية RSI(14)")
         )
 
-        # 1. رسم حركة السعر ومتوسطات EMA
         fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["last_price"], name="السعر", line=dict(color="#ffffff", width=2)), row=1, col=1)
         fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["ema_20"], name="EMA 20", line=dict(color="#f0b90b", width=1.5)), row=1, col=1)
         fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["ema_50"], name="EMA 50", line=dict(color="#e040fb", width=1.5)), row=1, col=1)
 
-        # 2. رسم مؤشر RSI
         fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["rsi_14"], name="RSI", line=dict(color="#29b6f6", width=1.5)), row=2, col=1)
-        
-        # خطوط التشبع الشرائي والبيعي للـ RSI
         fig.add_hline(y=70, row=2, col=1, line_dash="dash", line_color="#f6465d", opacity=0.5)
         fig.add_hline(y=30, row=2, col=1, line_dash="dash", line_color="#0ecb81", opacity=0.5)
 
@@ -341,7 +421,7 @@ with tab_charts:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-# ----- TAB 3: مقارنة الأزواج (Comparison Table) -----
+# ----- TAB 4: مقارنة الأزواج (Comparison Table) -----
 with tab_compare:
     st.subheader("مقارنة مؤشرات السوق عبر الأزواج")
     comp_tf = st.selectbox("الإطار الزمني للمقارنة:", TIMEFRAMES, key="cp_tf")
@@ -353,7 +433,6 @@ with tab_compare:
     if rows:
         df_cp = pd.DataFrame(rows)
         
-        # تلوين مشروط لجدول البيانات
         def style_rsi(val):
             if val >= 70:
                 return 'background-color: #f6465d22; color: #f6465d; font-weight:bold;'
@@ -362,16 +441,16 @@ with tab_compare:
             return 'color: #eaecef;'
 
         styled_df = df_cp.style.map(style_rsi, subset=['rsi_14']).format({
-    'last_price': '{:.5f}',
-    'rsi_14': '{:.2f}',
-    'ema_20': '{:.5f}',
-    'ema_50': '{:.5f}',
-    'atr_14': '{:.5f}'
-})
+            'last_price': '{:.5f}',
+            'rsi_14': '{:.2f}',
+            'ema_20': '{:.5f}',
+            'ema_50': '{:.5f}',
+            'atr_14': '{:.5f}'
+        })
         
         st.dataframe(styled_df, use_container_width=True, height=400)
 
-# ----- TAB 4: تقارير الذكاء الاصطناعي المخزنة -----
+# ----- TAB 5: تقارير الذكاء الاصطناعي المخزنة -----
 with tab_ai:
     st.subheader("استعراض تقارير التحليل المتقدمة")
     c_q1, c_q2 = st.columns(2)
