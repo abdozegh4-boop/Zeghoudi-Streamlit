@@ -6,20 +6,101 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import psycopg2
 import psycopg2.extras
 import streamlit as st
 
-# ==================== إعداد الصفحة ====================
+# ==================== 1. إعداد الصفحة والتصميم الخاص (Custom CSS) ====================
 st.set_page_config(
-    page_title="لوحة تحليلات التداول",
-    page_icon="📈",
+    page_title="Analytics Dashboard | Pro Trading",
+    page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# ==================== جلب الأسرار والاتصال ====================
-# يقرأ Streamlit الأسرار تلقائياً من st.secrets أو متغيرات البيئة
+# حقن Custom CSS لتحسين المظهر بالكامل
+st.markdown("""
+    <style>
+    /* خلفية التطبيق العامة */
+    .stApp {
+        background-color: #0b0e11;
+        color: #eaecef;
+    }
+    
+    /* اخفاء القوائم الهامشية والتذييل الافتراضي */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+
+    /* تصميم التبويبات (Tabs) */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 12px;
+        background-color: #181a20;
+        padding: 8px;
+        border-radius: 12px;
+        border: 1px solid #2b313a;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        color: #848e9c;
+        font-weight: 600;
+        padding: 8px 16px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #2b313a !important;
+        color: #f0b90b !important;
+    }
+
+    /* تصميم بطاقات المؤشرات (Metric Cards) */
+    .metric-card {
+        background: linear-gradient(135deg, #181a20 0%, #1e2329 100%);
+        border: 1px solid #2b313a;
+        border-radius: 12px;
+        padding: 18px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+    .metric-card:hover {
+        transform: translateY(-2px);
+        border-color: #f0b90b;
+    }
+    .metric-title {
+        font-size: 13px;
+        color: #848e9c;
+        margin-bottom: 6px;
+    }
+    .metric-value {
+        font-size: 22px;
+        font-weight: 700;
+        color: #f0b90b;
+    }
+
+    /* تصميم بطاقات التوصيات (Glassmorphism Cards) */
+    .signal-card {
+        background: rgba(30, 35, 41, 0.7);
+        backdrop-filter: blur(10px);
+        border-radius: 14px;
+        padding: 20px;
+        margin-bottom: 15px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+    }
+    .buy-border { border: 1px solid #0ecb81; border-right: 6px solid #0ecb81; }
+    .sell-border { border: 1px solid #f6465d; border-right: 6px solid #f6465d; }
+    .neutral-border { border: 1px solid #848e9c; border-right: 6px solid #848e9c; }
+
+    /* تحسين خيارات القوائم */
+    .stSelectbox div[data-baseweb="select"] {
+        background-color: #181a20;
+        border-color: #2b313a;
+        color: #eaecef;
+        border-radius: 8px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+
+# ==================== 2. الاتصال وجلب البيانات ====================
 DATABASE_URL = st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL", "")).strip()
 DB_CA_CERT_PEM = st.secrets.get("DB_CA_CERT_PEM", os.getenv("DB_CA_CERT_PEM", "")).strip()
 AUTO_ANALYSIS_INTERVAL_MINUTES = int(st.secrets.get("AUTO_ANALYSIS_INTERVAL_MINUTES", "10"))
@@ -31,10 +112,9 @@ if DB_CA_CERT_PEM:
     _ca_file.close()
     _CA_CERT_PATH = _ca_file.name
 
-
 def get_conn():
     if not DATABASE_URL:
-        st.error("⚠️ لم يتم ضبط DATABASE_URL في Streamlit Secrets.")
+        st.error("⚠️ DATABASE_URL غير مضبوط في Secrets.")
         st.stop()
     kwargs: Dict[str, Any] = {"dsn": DATABASE_URL, "connect_timeout": 8}
     if _CA_CERT_PATH:
@@ -43,7 +123,6 @@ def get_conn():
     else:
         kwargs["sslmode"] = "require"
     return psycopg2.connect(**kwargs)
-
 
 def run_query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
     try:
@@ -54,9 +133,6 @@ def run_query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
     except Exception as e:
         st.error(f"خطأ في قاعدة البيانات: {e}")
         return []
-
-
-# ==================== دوال جلب البيانات ====================
 
 def get_known_symbols() -> List[str]:
     try:
@@ -73,7 +149,6 @@ def get_known_symbols() -> List[str]:
     except Exception:
         return ["EURUSD", "XAUUSD", "BTCUSD"]
 
-
 def get_known_timeframes() -> List[str]:
     try:
         rows = run_query("SELECT DISTINCT timeframe FROM technical_snapshots ORDER BY 1")
@@ -81,7 +156,6 @@ def get_known_timeframes() -> List[str]:
         return tf if tf else ["H1", "H4", "M15", "D1"]
     except Exception:
         return ["H1", "H4", "M15", "D1"]
-
 
 def fetch_system_status() -> Dict[str, Any]:
     status: Dict[str, Any] = {"db_ok": False}
@@ -108,7 +182,6 @@ def fetch_system_status() -> Dict[str, Any]:
         status["error"] = str(e)
     return status
 
-
 def parse_quick_signal_blocks(report_text: str) -> List[Dict[str, str]]:
     blocks = re.split(r"\n\s*\n", report_text.strip())
     results = []
@@ -130,7 +203,6 @@ def parse_quick_signal_blocks(report_text: str) -> List[Dict[str, str]]:
         })
     return results
 
-
 def fetch_latest_signal_cards() -> List[Dict[str, str]]:
     rows = run_query(
         """
@@ -151,26 +223,6 @@ def fetch_latest_signal_cards() -> List[Dict[str, str]]:
             cards.append(card)
     return cards
 
-
-def fetch_comparison_table(timeframe: str) -> pd.DataFrame:
-    rows = run_query(
-        """
-        SELECT DISTINCT ON (symbol) symbol, last_price, rsi_14, ema_20, ema_50, atr_14, created_at
-        FROM technical_snapshots
-        WHERE timeframe = %s
-        ORDER BY symbol, created_at DESC
-        """,
-        (timeframe,)
-    )
-    if not rows:
-        return pd.DataFrame(columns=["الزوج", "السعر", "RSI(14)", "EMA(20)", "EMA(50)", "ATR(14)", "آخر تحديث"])
-    df = pd.DataFrame(rows)
-    return df.rename(columns={
-        "symbol": "الزوج", "last_price": "السعر", "rsi_14": "RSI(14)",
-        "ema_20": "EMA(20)", "ema_50": "EMA(50)", "atr_14": "ATR(14)", "created_at": "آخر تحديث"
-    })
-
-
 def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
     rows = run_query(
         """
@@ -185,158 +237,163 @@ def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 200) -> pd
     return pd.DataFrame(rows)
 
 
-def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
-    price_df = fetch_indicator_history(symbol, timeframe, limit)
-    signal_rows = run_query(
-        """
-        SELECT report_text, created_at
-        FROM ai_reports
-        WHERE analysis_type = 'quick_signals' AND symbols LIKE %s
-        ORDER BY created_at ASC
-        """,
-        (f"%{symbol}%",)
-    )
+# ==================== 3. الهيكل الرئيسي للواجهة ====================
 
-    points = []
-    for row in signal_rows:
-        for card in parse_quick_signal_blocks(row["report_text"]):
-            if card["symbol"] != symbol:
-                continue
-            if not price_df.empty:
-                nearest_idx = (price_df["created_at"] - row["created_at"]).abs().idxmin()
-                nearest_row = price_df.loc[nearest_idx]
-                points.append({
-                    "x": row["created_at"],
-                    "y": float(nearest_row["last_price"]),
-                    "emoji": card["emoji"],
-                    "direction": card["direction"],
-                })
-    return price_df, points
-
-
-# ==================== واجهة المستخدم ====================
-
-st.title("📈 لوحة العرض والتحليل الفني (Read-Only)")
-st.caption("تستعرض البيانات والتحليلات المخزنة في Aiven مجاناً وبأداء حي.")
+# الهيدر الاحترافي
+st.markdown("""
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0 25px 0;">
+        <div>
+            <h1 style="margin:0; font-size:28px; font-weight:800; color:#ffffff;">⚡ TRADING ANALYTICS PRO</h1>
+            <p style="margin:0; color:#848e9c; font-size:14px;">نظام المراقبة والتحليل المباشر (Aiven Read-Only Sync)</p>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
 
 SYMBOLS = get_known_symbols()
 TIMEFRAMES = get_known_timeframes()
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🖥️ حالة النظام",
+# شريط الحالات العلوي (Top Header Metrics)
+status = fetch_system_status()
+if status.get("db_ok"):
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f'<div class="metric-card"><div class="metric-title">حالة قاعدة البيانات</div><div class="metric-value" style="color:#0ecb81;">متصلة 🟢</div></div>', unsafe_allow_html=True)
+    with c2:
+        fresh_color = "#0ecb81" if status.get("pipeline_fresh") else "#f6465d"
+        fresh_text = "مباشر ⚡" if status.get("pipeline_fresh") else "متأخر ⚠️"
+        st.markdown(f'<div class="metric-card"><div class="metric-title">تدفق البيانات</div><div class="metric-value" style="color:{fresh_color};">{fresh_text}</div></div>', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'<div class="metric-card"><div class="metric-title">عمر أحدث لقطة</div><div class="metric-value">{status.get("last_technical_age_min", "-")} دقيقة</div></div>', unsafe_allow_html=True)
+    with c4:
+        st.markdown(f'<div class="metric-card"><div class="metric-title">الأزواج المراقبة</div><div class="metric-value">{status.get("active_watches_count", 0)} أزواج</div></div>', unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# التبويبات الرسمية
+tab_signals, tab_charts, tab_compare, tab_ai = st.tabs([
     "🎯 التوصيات الحية",
+    "📈 الرسم البياني المدمج",
     "📊 مقارنة الأزواج",
-    "📈 تطور المؤشرات",
-    "💰 السعر مع نقاط التوصيات",
-    "💬 آخر تحليل مخزن"
+    "🤖 تقارير AI المخزنة"
 ])
 
-# ----- Tab 1: حالة النظام -----
-with tab1:
-    st.subheader("مرآة حالة تدفق البيانات والنظام")
-    status = fetch_system_status()
-    if status.get("db_ok"):
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("قاعدة البيانات Aiven", "متصلة 🟢")
-        freshness = "حديثة 🟢" if status.get("pipeline_fresh") else "متأخرة 🔴"
-        col2.metric("حالة تدفق البيانات", freshness)
-        col3.metric("عمر آخر تحديث", f"{status.get('last_technical_age_min', '-')} دقيقة")
-        col4.metric("إجمالي اللقطات الفنية", status.get("snapshots_count", 0))
-    else:
-        st.error("تعذر الاتصال بقاعدة البيانات.")
-
-# ----- Tab 2: التوصيات الحية -----
-with tab2:
-    st.subheader("آخر بطاقات توصيات التداول (Quick Signals)")
+# ----- TAB 1: التوصيات الحية (Signal Cards) -----
+with tab_signals:
+    st.subheader("آخر إشارات التداول المولدّة")
     cards = fetch_latest_signal_cards()
     if cards:
         cols = st.columns(3)
         for idx, c in enumerate(cards):
             with cols[idx % 3]:
-                color = "#2ecc71" if c["emoji"] == "🟢" else "#e74c3c" if c["emoji"] == "🔴" else "#95a5a6"
+                card_class = "buy-border" if c["emoji"] == "🟢" else "sell-border" if c["emoji"] == "🔴" else "neutral-border"
+                color_code = "#0ecb81" if c["emoji"] == "🟢" else "#f6465d" if c["emoji"] == "🔴" else "#848e9c"
+                
                 st.markdown(
                     f"""
-                    <div style="border: 2px solid {color}; padding: 15px; border-radius: 10px; background-color: #111; margin-bottom: 10px;">
-                        <h3 style="margin:0; color:{color};">{c['emoji']} {c['symbol']} — {c['direction']}</h3>
-                        <hr style="margin: 8px 0;">
-                        <p style="margin:3px 0;"><b>الدخول:</b> {c['entry']}</p>
-                        <p style="margin:3px 0;"><b>وقف الخسارة (SL):</b> {c['sl']}</p>
-                        <p style="margin:3px 0;"><b>أهداف الربح:</b> {c['tp1']} / {c['tp2']}</p>
-                        <p style="margin:3px 0;"><b>مخاطرة/عائد:</b> {c['rr']}</p>
-                        <small style="color: #777;">التحديث: {c['updated_at']}</small>
+                    <div class="signal-card {card_class}">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <h3 style="margin:0; color:{color_code}; font-size:20px;">{c['emoji']} {c['symbol']}</h3>
+                            <span style="background:{color_code}22; color:{color_code}; padding:4px 10px; border-radius:6px; font-weight:bold; font-size:12px;">{c['direction']}</span>
+                        </div>
+                        <hr style="border-color:#2b313a; margin:12px 0;">
+                        <div style="font-size:14px; line-height:1.8;">
+                            <div><b>سعر الدخول:</b> <span style="color:#ffffff;">{c['entry']}</span></div>
+                            <div><b>وقف الخسارة (SL):</b> <span style="color:#f6465d;">{c['sl']}</span></div>
+                            <div><b>الاهداف (TP):</b> <span style="color:#0ecb81;">{c['tp1']}</span> / <span style="color:#0ecb81;">{c['tp2']}</span></div>
+                            <div><b>المخاطرة/العائد:</b> <span style="color:#f0b90b;">{c['rr']}</span></div>
+                        </div>
+                        <div style="margin-top:12px; font-size:11px; color:#848e9c; text-align:left;">⏱️ {c['updated_at']}</div>
                     </div>
                     """,
                     unsafe_allow_html=True
                 )
     else:
-        st.info("لا توجد إشارات مخزنة متوفرة.")
+        st.info("لا توجد إشارات حية مخزنة حالياً.")
 
-# ----- Tab 3: مقارنة الأزواج -----
-with tab3:
-    st.subheader("مقارنة أداء الأزواج المتعددة جنبًا إلى جنب")
-    selected_tf = st.selectbox("اختر الإطار الزمني للمقارنة:", TIMEFRAMES, key="comp_tf")
-    df_comp = fetch_comparison_table(selected_tf)
-    if not df_comp.empty:
-        st.dataframe(df_comp, use_container_width=True)
-        fig_comp = go.Figure()
-        fig_comp.add_trace(go.Bar(x=df_comp["الزوج"], y=df_comp["RSI(14)"], marker_color="#3498db", name="RSI"))
-        fig_comp.update_layout(title=f"مقارنة RSI بين الأزواج ({selected_tf})", template="plotly_dark", height=400)
-        st.plotly_chart(fig_comp, use_container_width=True)
-
-# ----- Tab 4: تطور المؤشرات -----
-with tab4:
-    st.subheader("رسم بياني تفاعلي لتطور RSI/EMA عبر الوقت")
-    col_a, col_b = st.columns(2)
-    s_sym = col_a.selectbox("اختر الزوج:", SYMBOLS, key="ind_sym")
-    s_tf = col_b.selectbox("اختر الإطار الزمني:", TIMEFRAMES, key="ind_tf")
-    df_ind = fetch_indicator_history(s_sym, s_tf)
-    if not df_ind.empty:
-        fig_ind = go.Figure()
-        fig_ind.add_trace(go.Scatter(x=df_ind["created_at"], y=df_ind["rsi_14"], name="RSI(14)", yaxis="y1", line=dict(color="#f1c40f")))
-        fig_ind.add_trace(go.Scatter(x=df_ind["created_at"], y=df_ind["ema_20"], name="EMA(20)", yaxis="y2", line=dict(color="#3498db")))
-        fig_ind.add_trace(go.Scatter(x=df_ind["created_at"], y=df_ind["ema_50"], name="EMA(50)", yaxis="y2", line=dict(color="#9b59b6")))
-        fig_ind.update_layout(
-            title=f"تطور المؤشرات الفنية لـ {s_sym} [{s_tf}]",
-            template="plotly_dark", height=480,
-            yaxis=dict(title="RSI", range=[0, 100], side="left"),
-            yaxis2=dict(title="EMA", overlaying="y", side="right"),
+# ----- TAB 2: الشارت المدمج الاحترافي (Combined Chart) -----
+with tab_charts:
+    st.subheader("التحليل الفني الشامل وحركة السعر")
+    col_a, col_b = st.columns([1, 1])
+    s_sym = col_a.selectbox("اختر الزوج:", SYMBOLS, key="ch_sym")
+    s_tf = col_b.selectbox("اختر الإطار الزمني:", TIMEFRAMES, key="ch_tf")
+    
+    df_chart = fetch_indicator_history(s_sym, s_tf)
+    if not df_chart.empty:
+        # إنشاء شارت مدمج بمحورين رأسيين (Subplots)
+        fig = make_subplots(
+            rows=2, cols=1, 
+            shared_xaxes=True, 
+            vertical_spacing=0.05, 
+            row_heights=[0.7, 0.3],
+            subplot_titles=(f"سعر {s_sym} ومتوسطات EMA", "مؤشر القوة النسبية RSI(14)")
         )
-        st.plotly_chart(fig_ind, use_container_width=True)
 
-# ----- Tab 5: السعر مع التوصيات -----
-with tab5:
-    st.subheader("تطور السعر مع نقاط التوصيات الصادرة")
-    col_x, col_y = st.columns(2)
-    p_sym = col_x.selectbox("اختر الزوج:", SYMBOLS, key="price_sym")
-    p_tf = col_y.selectbox("اختر الإطار الزمني:", TIMEFRAMES, key="price_tf")
-    price_df, points = fetch_price_with_signal_points(p_sym, p_tf)
-    if not price_df.empty:
-        fig_price = go.Figure()
-        fig_price.add_trace(go.Scatter(x=price_df["created_at"], y=price_df["last_price"], name="السعر", line=dict(color="#ecf0f1")))
-        color_map = {"🟢": "#2ecc71", "🔴": "#e74c3c", "⚪": "#95a5a6"}
-        for emoji, label in [("🟢", "شراء"), ("🔴", "بيع"), ("⚪", "حياد")]:
-            pts = [p for p in points if p["emoji"] == emoji]
-            if pts:
-                fig_price.add_trace(go.Scatter(
-                    x=[p["x"] for p in pts], y=[p["y"] for p in pts],
-                    mode="markers", name=label,
-                    marker=dict(color=color_map[emoji], size=12, symbol="circle")
-                ))
-        fig_price.update_layout(title=f"السعر مطبقاً بنقاط التوصيات التاريخية لـ {p_sym}", template="plotly_dark", height=500)
-        st.plotly_chart(fig_price, use_container_width=True)
+        # 1. رسم حركة السعر ومتوسطات EMA
+        fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["last_price"], name="السعر", line=dict(color="#ffffff", width=2)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["ema_20"], name="EMA 20", line=dict(color="#f0b90b", width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["ema_50"], name="EMA 50", line=dict(color="#e040fb", width=1.5)), row=1, col=1)
 
-# ----- Tab 6: الاستعلام عن التحليل -----
-with tab6:
-    st.subheader("استعلام عن آخر تحليل AI مخزن")
-    q_type = st.selectbox("نوع التحليل:", ["full", "quick_signals", "forex_factory", "finnhub"])
-    q_symbol = st.text_input("رمز الزوج (مثل XAUUSD, EURUSD):", value="XAUUSD")
-    if st.button("عرض التقرير المخزن"):
-        rows = run_query(
+        # 2. رسم مؤشر RSI
+        fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["rsi_14"], name="RSI", line=dict(color="#29b6f6", width=1.5)), row=2, col=1)
+        
+        # خطوط التشبع الشرائي والبيعي للـ RSI
+        fig.add_hline(y=70, row=2, col=1, line_dash="dash", line_color="#f6465d", opacity=0.5)
+        fig.add_hline(y=30, row=2, col=1, line_dash="dash", line_color="#0ecb81", opacity=0.5)
+
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#181a20",
+            plot_bgcolor="#181a20",
+            height=580,
+            margin=dict(l=10, r=10, t=40, b=10),
+            legend=dict(orientation="h", y=1.02, x=0.1)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+# ----- TAB 3: مقارنة الأزواج (Comparison Table) -----
+with tab_compare:
+    st.subheader("مقارنة مؤشرات السوق عبر الأزواج")
+    comp_tf = st.selectbox("الإطار الزمني للمقارنة:", TIMEFRAMES, key="cp_tf")
+    
+    rows = run_query(
+        "SELECT DISTINCT ON (symbol) symbol, last_price, rsi_14, ema_20, ema_50, atr_14, created_at FROM technical_snapshots WHERE timeframe = %s ORDER BY symbol, created_at DESC",
+        (comp_tf,)
+    )
+    if rows:
+        df_cp = pd.DataFrame(rows)
+        
+        # تلوين مشروط لجدول البيانات
+        def style_rsi(val):
+            if val >= 70:
+                return 'background-color: #f6465d22; color: #f6465d; font-weight:bold;'
+            elif val <= 30:
+                return 'background-color: #0ecb8122; color: #0ecb81; font-weight:bold;'
+            return 'color: #eaecef;'
+
+        styled_df = df_cp.style.applymap(style_rsi, subset=['rsi_14']).format({
+            'last_price': '{:.5f}',
+            'rsi_14': '{:.2f}',
+            'ema_20': '{:.5f}',
+            'ema_50': '{:.5f}',
+            'atr_14': '{:.5f}'
+        })
+        
+        st.dataframe(styled_df, use_container_width=True, height=400)
+
+# ----- TAB 4: تقارير الذكاء الاصطناعي المخزنة -----
+with tab_ai:
+    st.subheader("استعراض تقارير التحليل المتقدمة")
+    c_q1, c_q2 = st.columns(2)
+    q_type = c_q1.selectbox("نوع التقرير:", ["full", "quick_signals", "forex_factory", "finnhub"])
+    q_sym = c_q2.text_input("رمز الزوج:", value="XAUUSD")
+    
+    if st.button("🔍 جلب التقرير"):
+        reports = run_query(
             "SELECT report_text, created_at FROM ai_reports WHERE analysis_type = %s AND symbols LIKE %s ORDER BY created_at DESC LIMIT 1",
-            (q_type, f"%{q_symbol}%")
+            (q_type, f"%{q_sym}%")
         )
-        if rows:
-            st.markdown(f"**تاريخ التقرير:** {rows[0]['created_at']}")
-            st.markdown(rows[0]["report_text"])
+        if reports:
+            st.success(f"تاريخ التقرير: {reports[0]['created_at']}")
+            st.markdown(f'<div style="background:#181a20; padding:20px; border-radius:12px; border:1px solid #2b313a;">{reports[0]["report_text"]}</div>', unsafe_allow_html=True)
         else:
-            st.info("لا يوجد تحليل مخزن لهذا الزوج حالياً.")
+            st.warning("لم يتم العثور على تقرير مطابق للبيانات المحددة.")
