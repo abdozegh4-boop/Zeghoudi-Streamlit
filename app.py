@@ -370,13 +370,13 @@ with tab_compare:
                 return 'background-color: #0ecb8122; color: #0ecb81; font-weight:bold;'
             return 'color: #eaecef;'
 
-        styled_df = df_cp.style.applymap(style_rsi, subset=['rsi_14']).format({
-            'last_price': '{:.5f}',
-            'rsi_14': '{:.2f}',
-            'ema_20': '{:.5f}',
-            'ema_50': '{:.5f}',
-            'atr_14': '{:.5f}'
-        })
+        styled_df = df_cp.style.map(style_rsi, subset=['rsi_14']).format({
+    'last_price': '{:.5f}',
+    'rsi_14': '{:.2f}',
+    'ema_20': '{:.5f}',
+    'ema_50': '{:.5f}',
+    'atr_14': '{:.5f}'
+})
         
         st.dataframe(styled_df, use_container_width=True, height=400)
 
