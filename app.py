@@ -151,16 +151,10 @@ def run_query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
         return []
 
 def get_known_symbols() -> List[str]:
+    """جلب الأزواج المفعلة والمختارة عبر تلجرام فقط والموجودة في جدول active_watches"""
     try:
-        rows = run_query(
-            """
-            SELECT DISTINCT symbol FROM technical_snapshots
-            UNION
-            SELECT DISTINCT unnest(string_to_array(symbols, ',')) FROM active_watches
-            ORDER BY 1
-            """
-        )
-        symbols = sorted({r["symbol"] for r in rows if r["symbol"]})
+        rows = run_query("SELECT DISTINCT unnest(string_to_array(symbols, ',')) AS symbol FROM active_watches")
+        symbols = sorted({r["symbol"].strip() for r in rows if r.get("symbol") and r["symbol"].strip()})
         return symbols if symbols else ["EURUSD", "XAUUSD", "BTCUSD"]
     except Exception:
         return ["EURUSD", "XAUUSD", "BTCUSD"]
@@ -198,33 +192,6 @@ def fetch_system_status() -> Dict[str, Any]:
         status["error"] = str(e)
     return status
 
-def parse_quick_signal_blocks(report_text: str) -> List[Dict[str, str]]:
-    """
-    [قديم/متروك] كان يُستخدم عندما كانت التوصيات تُستخرج من نص تحليل AI منسَّق
-    (analysis_type='quick_signals'). هذا النوع لم يعد يُولَّد إطلاقاً — التوصيات الآن
-    تُخزَّن مباشرة كأعمدة منظَّمة في جدول symbol_signals. أُبقي الدالة معطَّلة الاستخدام
-    فقط تحسباً لأي نص تحليل قديم قد يحتوي هذا التنسيق.
-    """
-    blocks = re.split(r"\n\s*\n", report_text.strip())
-    results = []
-    for block in blocks:
-        header_match = re.search(r"(🟢|🔴|⚪)\s*([A-Za-z0-9]+)\s*—\s*(.+)", block)
-        if not header_match:
-            continue
-        emoji, symbol, direction = header_match.groups()
-        fields = {"entry": "-", "sl": "-", "tp1": "-", "tp2": "-", "rr": "-"}
-        for label, key in [("الدخول", "entry"), ("SL", "sl"), ("TP1", "tp1"), ("TP2", "tp2"), ("R:R", "rr")]:
-            m = re.search(rf"{re.escape(label)}\s*:\s*([^\n]+)", block)
-            if m:
-                fields[key] = m.group(1).strip()
-        results.append({
-            "emoji": emoji,
-            "symbol": symbol,
-            "direction": direction.strip(),
-            **fields,
-        })
-    return results
-
 @st.cache_data(ttl=15)
 def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 300) -> pd.DataFrame:
     rows = run_query(
@@ -246,8 +213,6 @@ def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 300) -> pd
 def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
     price_df = fetch_indicator_history(symbol, timeframe, limit)
 
-    # التاريخ الكامل لتوصيات هذا الزوج تحديداً، مباشرة من الأعمدة المُخزَّنة
-    # (بلا أي تحليل نصي) — symbol_signals سجل تراكمي وليس أحدث توصية فقط.
     signal_rows = run_query(
         """
         SELECT emoji, direction, status, created_at
@@ -274,14 +239,20 @@ def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300
     return price_df, points
 
 def fetch_latest_signal_cards() -> List[Dict[str, str]]:
-    """آخر توصية فقط لكل زوج، مباشرة من الأعمدة المُخزَّنة في symbol_signals (سجل تراكمي)."""
+    """آخر توصية فقط لكل زوج من الأزواج المفعلة في active_watches."""
+    active_symbols = get_known_symbols()
+    if not active_symbols:
+        return []
+
     rows = run_query(
         """
         SELECT DISTINCT ON (symbol)
             symbol, emoji, direction, entry, sl, tp1, tp2, rr, status, created_at
         FROM symbol_signals
+        WHERE symbol = ANY(%s)
         ORDER BY symbol, created_at DESC
-        """
+        """,
+        (active_symbols,)
     )
     cards: List[Dict[str, str]] = []
     for row in rows:
@@ -383,7 +354,7 @@ with tab_signals:
                     unsafe_allow_html=True
                 )
     else:
-        st.info("لا توجد إشارات حية مخزنة حالياً.")
+        st.info("لا توجد إشارات حية مخزنة للأزواج المحددة حالياً.")
 
 # ----- TAB 2: نقاط التوصيات الملونة على مسار السعر والزمن -----
 with tab_points:
@@ -396,7 +367,6 @@ with tab_points:
     if not price_df.empty:
         fig_pts = go.Figure()
 
-        # 1. رسم خط السعر المباشر عبر الزمن
         fig_pts.add_trace(go.Scatter(
             x=price_df["created_at"],
             y=price_df["last_price"],
@@ -405,7 +375,6 @@ with tab_points:
             hoverinfo="x+y"
         ))
 
-        # 2. إرجاع وإسقاط نقاط التوصيات الملونة (شراء / بيع / حياد)
         color_map = {"🟢": "#0ecb81", "🔴": "#f6465d", "⚪": "#848e9c"}
         for emoji, label in [("🟢", "إشارة شراء (LONG)"), ("🔴", "إشارة بيع (SHORT)"), ("⚪", "إشارة حياد")]:
             pts = [p for p in points if p["emoji"] == emoji]
@@ -475,7 +444,7 @@ with tab_charts:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-# ----- TAB الجديد: الشموع اليابانية (OHLC) -----
+# ----- TAB 4: الشموع اليابانية (OHLC) -----
 with tab_candles:
     st.subheader("شموع OHLC الفعلية المخزَّنة من cTrader")
     col_o1, col_o2 = st.columns(2)
@@ -518,51 +487,53 @@ with tab_candles:
             "تأكد أن الجدولة التلقائية (الداخلية أو Cloud Scheduler) تعمل فعلياً."
         )
 
-# ----- TAB 4: مقارنة الأزواج (Comparison Table) -----
+# ----- TAB 5: مقارنة الأزواج المفعلة (Comparison Table) -----
 with tab_compare:
-    st.subheader("مقارنة مؤشرات السوق عبر الأزواج")
+    st.subheader("مقارنة مؤشرات السوق عبر الأزواج المراقبة")
     comp_tf = st.selectbox("الإطار الزمني للمقارنة:", TIMEFRAMES, key="cp_tf")
     
-    rows = run_query(
-        """
-        SELECT DISTINCT ON (symbol) symbol, last_price, rsi_14, ema_20, ema_50, atr_14, created_at 
-        FROM technical_snapshots 
-        WHERE timeframe = %s 
-        ORDER BY symbol, created_at DESC
-        """,
-        (comp_tf,)
-    )
-    if rows:
-        df_cp = pd.DataFrame(rows)
-        
-        # تحويل وقت اللقطة في جدول المقارنة إلى GMT+1 وصياغته بشكل واضح
-        if "created_at" in df_cp.columns:
-            df_cp["created_at"] = pd.to_datetime(df_cp["created_at"]) + pd.Timedelta(hours=1)
-            df_cp["created_at"] = df_cp["created_at"].dt.strftime("%Y-%m-%d %H:%M")
-        
-        def style_rsi(val):
-            if val >= 70:
-                return 'background-color: #f6465d22; color: #f6465d; font-weight:bold;'
-            elif val <= 30:
-                return 'background-color: #0ecb8122; color: #0ecb81; font-weight:bold;'
-            return 'color: #eaecef;'
+    if SYMBOLS:
+        rows = run_query(
+            """
+            SELECT DISTINCT ON (symbol) symbol, last_price, rsi_14, ema_20, ema_50, atr_14, created_at 
+            FROM technical_snapshots 
+            WHERE timeframe = %s AND symbol = ANY(%s)
+            ORDER BY symbol, created_at DESC
+            """,
+            (comp_tf, SYMBOLS)
+        )
+        if rows:
+            df_cp = pd.DataFrame(rows)
+            
+            if "created_at" in df_cp.columns:
+                df_cp["created_at"] = pd.to_datetime(df_cp["created_at"]) + pd.Timedelta(hours=1)
+                df_cp["created_at"] = df_cp["created_at"].dt.strftime("%Y-%m-%d %H:%M")
+            
+            def style_rsi(val):
+                if val >= 70:
+                    return 'background-color: #f6465d22; color: #f6465d; font-weight:bold;'
+                elif val <= 30:
+                    return 'background-color: #0ecb8122; color: #0ecb81; font-weight:bold;'
+                return 'color: #eaecef;'
 
-        styled_df = df_cp.style.map(style_rsi, subset=['rsi_14']).format({
-            'last_price': '{:.5f}',
-            'rsi_14': '{:.2f}',
-            'ema_20': '{:.5f}',
-            'ema_50': '{:.5f}',
-            'atr_14': '{:.5f}'
-        })
-        
-        st.dataframe(styled_df, use_container_width=True, height=400)
+            styled_df = df_cp.style.map(style_rsi, subset=['rsi_14']).format({
+                'last_price': '{:.5f}',
+                'rsi_14': '{:.2f}',
+                'ema_20': '{:.5f}',
+                'ema_50': '{:.5f}',
+                'atr_14': '{:.5f}'
+            })
+            
+            st.dataframe(styled_df, use_container_width=True, height=400)
+        else:
+            st.warning("لا توجد بيانات لقطات متاحة للأزواج المحددة.")
 
-# ----- TAB 5: تقارير الذكاء الاصطناعي المخزنة -----
+# ----- TAB 6: تقارير الذكاء الاصطناعي المخزنة -----
 with tab_ai:
     st.subheader("استعراض تقارير التحليل المتقدمة")
     c_q1, c_q2 = st.columns(2)
     q_type = c_q1.selectbox("نوع التقرير:", ["full", "forex_factory", "finnhub", "tradingview"])
-    q_sym = c_q2.text_input("رمز الزوج:", value="XAUUSD")
+    q_sym = c_q2.selectbox("رمز الزوج:", SYMBOLS, key="ai_sym")
     
     if st.button("🔍 جلب التقرير"):
         reports = run_query(
