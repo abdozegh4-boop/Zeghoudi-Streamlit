@@ -199,12 +199,15 @@ def fetch_system_status() -> Dict[str, Any]:
     return status
 
 def parse_quick_signal_blocks(report_text: str) -> List[Dict[str, str]]:
+<<<<<<< HEAD
     """
     [قديم/متروك] كان يُستخدم عندما كانت التوصيات تُستخرج من نص تحليل AI منسَّق
     (analysis_type='quick_signals'). هذا النوع لم يعد يُولَّد إطلاقاً — التوصيات الآن
     تُخزَّن مباشرة كأعمدة منظَّمة في جدول symbol_signals. أُبقي الدالة معطَّلة الاستخدام
     فقط تحسباً لأي نص تحليل قديم قد يحتوي هذا التنسيق.
     """
+=======
+>>>>>>> c5e4923036140ec58033f81959aa081be2c2d4b3
     blocks = re.split(r"\n\s*\n", report_text.strip())
     results = []
     for block in blocks:
@@ -245,6 +248,7 @@ def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 300) -> pd
 
 def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
     price_df = fetch_indicator_history(symbol, timeframe, limit)
+<<<<<<< HEAD
 
     # التاريخ الكامل لتوصيات هذا الزوج تحديداً، مباشرة من الأعمدة المُخزَّنة
     # (بلا أي تحليل نصي) — symbol_signals سجل تراكمي وليس أحدث توصية فقط.
@@ -298,6 +302,59 @@ def fetch_latest_signal_cards() -> List[Dict[str, str]]:
             "status": row.get("status") or "pending",
             "updated_at": card_time.strftime("%Y-%m-%d %H:%M") if card_time is not None else "-",
         })
+=======
+    signal_rows = run_query(
+        """
+        SELECT report_text, created_at
+        FROM ai_reports
+        WHERE analysis_type = 'quick_signals' AND symbols LIKE %s
+        ORDER BY created_at ASC
+        """,
+        (f"%{symbol}%",)
+    )
+
+    points = []
+    for row in signal_rows:
+        # تحويل وقت الإشارة إلى توقيت GMT+1
+        sig_time = pd.to_datetime(row["created_at"]) + pd.Timedelta(hours=1)
+        
+        for card in parse_quick_signal_blocks(row["report_text"]):
+            if card["symbol"] != symbol:
+                continue
+            if not price_df.empty:
+                nearest_idx = (price_df["created_at"] - sig_time).abs().idxmin()
+                nearest_row = price_df.loc[nearest_idx]
+                points.append({
+                    "x": sig_time,
+                    "y": float(nearest_row["last_price"]),
+                    "emoji": card["emoji"],
+                    "direction": card["direction"],
+                })
+    return price_df, points
+
+def fetch_latest_signal_cards() -> List[Dict[str, str]]:
+    # جلب أحدث 15 تقرير إشارات سريعة مرتبة زمنياً
+    rows = run_query(
+        """
+        SELECT report_text, created_at
+        FROM ai_reports
+        WHERE analysis_type = 'quick_signals'
+        ORDER BY created_at DESC
+        LIMIT 15
+        """
+    )
+    cards: List[Dict[str, str]] = []
+    seen_symbols = set()
+    for row in rows:
+        card_time = (pd.to_datetime(row["created_at"]) + pd.Timedelta(hours=1)) if row["created_at"] else None
+        for card in parse_quick_signal_blocks(row["report_text"]):
+            # عرض أحدث إشارة واحدة فقط لكل زوج
+            if card["symbol"] in seen_symbols:
+                continue
+            seen_symbols.add(card["symbol"])
+            card["updated_at"] = card_time.strftime("%Y-%m-%d %H:%M") if card_time is not None else "-"
+            cards.append(card)
+>>>>>>> c5e4923036140ec58033f81959aa081be2c2d4b3
     return cards
 
 # ==================== 3. الهيكل الرئيسي للواجهة ====================
@@ -332,11 +389,18 @@ if status.get("db_ok"):
 st.markdown("<br>", unsafe_allow_html=True)
 
 # التبويبات الرسمية
+<<<<<<< HEAD
 tab_signals, tab_points, tab_charts, tab_candles, tab_compare, tab_ai = st.tabs([
     "🎯 التوصيات الحية",
     "📍 نقاط التوصيات على السعر",
     "📈 الرسم البياني المدمج",
     "🕯️ الشموع اليابانية (OHLC)",
+=======
+tab_signals, tab_points, tab_charts, tab_compare, tab_ai = st.tabs([
+    "🎯 التوصيات الحية",
+    "📍 نقاط التوصيات على السعر",
+    "📈 الرسم البياني المدمج",
+>>>>>>> c5e4923036140ec58033f81959aa081be2c2d4b3
     "📊 مقارنة الأزواج",
     "🤖 تقارير AI المخزنة"
 ])
@@ -351,6 +415,7 @@ with tab_signals:
             with cols[idx % 3]:
                 card_class = "buy-border" if c["emoji"] == "🟢" else "sell-border" if c["emoji"] == "🔴" else "neutral-border"
                 color_code = "#0ecb81" if c["emoji"] == "🟢" else "#f6465d" if c["emoji"] == "🔴" else "#848e9c"
+<<<<<<< HEAD
 
                 status_map = {
                     "pending": ("⏳ لم يُحسم بعد", "#848e9c"),
@@ -360,6 +425,9 @@ with tab_signals:
                 }
                 status_text, status_color = status_map.get(c.get("status", "pending"), status_map["pending"])
 
+=======
+                
+>>>>>>> c5e4923036140ec58033f81959aa081be2c2d4b3
                 st.markdown(
                     f"""
                     <div class="signal-card {card_class}">
@@ -367,9 +435,12 @@ with tab_signals:
                             <h3 style="margin:0; color:{color_code}; font-size:20px;">{c['emoji']} {c['symbol']}</h3>
                             <span style="background:{color_code}22; color:{color_code}; padding:4px 10px; border-radius:6px; font-weight:bold; font-size:12px;">{c['direction']}</span>
                         </div>
+<<<<<<< HEAD
                         <div style="margin-top:8px;">
                             <span style="background:{status_color}22; color:{status_color}; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:600;">{status_text}</span>
                         </div>
+=======
+>>>>>>> c5e4923036140ec58033f81959aa081be2c2d4b3
                         <hr style="border-color:#2b313a; margin:12px 0;">
                         <div style="font-size:14px; line-height:1.8;">
                             <div><b>سعر الدخول:</b> <span style="color:#ffffff;">{c['entry']}</span></div>
@@ -422,7 +493,11 @@ with tab_points:
                         line=dict(width=2, color="#000000")
                     ),
                     hoverinfo="text",
+<<<<<<< HEAD
                     text=[f"إشارة {label} عند سعر {p['y']} — الحالة: {p.get('status', 'pending')}" for p in pts]
+=======
+                    text=[f"إشارة {label} عند سعر {p['y']}" for p in pts]
+>>>>>>> c5e4923036140ec58033f81959aa081be2c2d4b3
                 ))
 
         fig_pts.update_layout(
@@ -475,6 +550,7 @@ with tab_charts:
         )
         st.plotly_chart(fig, use_container_width=True)
 
+<<<<<<< HEAD
 # ----- TAB الجديد: الشموع اليابانية (OHLC) -----
 with tab_candles:
     st.subheader("شموع OHLC الفعلية المخزَّنة من cTrader")
@@ -518,6 +594,8 @@ with tab_candles:
             "تأكد أن الجدولة التلقائية (الداخلية أو Cloud Scheduler) تعمل فعلياً."
         )
 
+=======
+>>>>>>> c5e4923036140ec58033f81959aa081be2c2d4b3
 # ----- TAB 4: مقارنة الأزواج (Comparison Table) -----
 with tab_compare:
     st.subheader("مقارنة مؤشرات السوق عبر الأزواج")
@@ -561,7 +639,11 @@ with tab_compare:
 with tab_ai:
     st.subheader("استعراض تقارير التحليل المتقدمة")
     c_q1, c_q2 = st.columns(2)
+<<<<<<< HEAD
     q_type = c_q1.selectbox("نوع التقرير:", ["full", "forex_factory", "finnhub", "tradingview"])
+=======
+    q_type = c_q1.selectbox("نوع التقرير:", ["full", "quick_signals", "forex_factory", "finnhub"])
+>>>>>>> c5e4923036140ec58033f81959aa081be2c2d4b3
     q_sym = c_q2.text_input("رمز الزوج:", value="XAUUSD")
     
     if st.button("🔍 جلب التقرير"):
