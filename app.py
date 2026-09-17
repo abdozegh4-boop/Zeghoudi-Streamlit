@@ -19,7 +19,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# حقن Custom CSS لضمان وضوح الألوان وتباين النصوص
 st.markdown("""
     <style>
     html, body, [class*="css"], .stApp {
@@ -117,7 +116,6 @@ def get_conn():
     return psycopg2.connect(**kwargs)
 
 def ensure_indexes_exist():
-    """إنشاء الفهارس تلقائياً داخل قاعدة البيانات لضمان السرعة الفائقة للاستعلامات"""
     queries = [
         """
         CREATE INDEX IF NOT EXISTS idx_snapshots_sym_tf_created 
@@ -150,11 +148,19 @@ def run_query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
         return []
 
 def get_known_symbols() -> List[str]:
-    """جلب الأزواج المفعلة والمختارة عبر تلجرام فقط من جدول active_watches"""
+    """استخراج وقسّم وتجريد كافة الرموز المراقبة فعلياً في active_watches"""
     try:
-        rows = run_query("SELECT DISTINCT unnest(string_to_array(symbols, ',')) AS symbol FROM active_watches")
-        symbols = sorted({r["symbol"].strip() for r in rows if r.get("symbol") and r["symbol"].strip()})
-        return symbols if symbols else []
+        rows = run_query("SELECT symbols FROM active_watches")
+        extracted_symbols = set()
+        for r in rows:
+            if r.get("symbols"):
+                # تفكيك النصوص المفصولة بفاصلة أو مسافات
+                parts = re.split(r'[,; ]+', str(r["symbols"]))
+                for p in parts:
+                    clean_sym = p.strip().upper()
+                    if clean_sym:
+                        extracted_symbols.add(clean_sym)
+        return sorted(list(extracted_symbols))
     except Exception:
         return []
 
@@ -171,13 +177,12 @@ def fetch_system_status() -> Dict[str, Any]:
     try:
         latest_tech = run_query("SELECT MAX(created_at) AS ts FROM technical_snapshots")
         latest_report = run_query("SELECT MAX(created_at) AS ts FROM ai_reports")
-        watches_count = run_query("SELECT count(*) AS c FROM active_watches")
         snapshots_count = run_query("SELECT count(*) AS c FROM technical_snapshots")
 
         status["db_ok"] = True
         status["last_technical_update"] = latest_tech[0]["ts"] if latest_tech else None
         status["last_report_update"] = latest_report[0]["ts"] if latest_report else None
-        status["active_watches_count"] = watches_count[0]["c"] if watches_count else 0
+        status["active_watches_count"] = len(get_known_symbols())
         status["snapshots_count"] = snapshots_count[0]["c"] if snapshots_count else 0
 
         if status["last_technical_update"]:
@@ -197,7 +202,7 @@ def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 300) -> pd
         """
         SELECT last_price, rsi_14, ema_20, ema_50, created_at
         FROM technical_snapshots
-        WHERE symbol = %s AND timeframe = %s
+        WHERE UPPER(TRIM(symbol)) = UPPER(TRIM(%s)) AND timeframe = %s
         ORDER BY created_at ASC
         LIMIT %s
         """,
@@ -215,7 +220,7 @@ def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300
         """
         SELECT emoji, direction, status, created_at
         FROM symbol_signals
-        WHERE symbol = %s
+        WHERE UPPER(TRIM(symbol)) = UPPER(TRIM(%s))
         ORDER BY created_at ASC
         """,
         (symbol,)
@@ -237,30 +242,28 @@ def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300
     return price_df, points
 
 def fetch_latest_signal_cards() -> List[Dict[str, str]]:
-    """جلب أحدث إشارة لكل زوج من الأزواج المفعلة حنياً فقط عبر active_watches"""
+    """تصفية حاسمة تضمن إرجاع التوصيات المخصصة للأزواج المفعلة في active_watches حصراً"""
     active_symbols = get_known_symbols()
     if not active_symbols:
         return []
 
-    # ربط الجدولين لمطابقة الأزواج المفعلة حصراً عبر INNER JOIN
+    # استخدام التصفية المباشرة بناءً على قائمة العناصر النشطة المخزنة
     rows = run_query(
         """
-        SELECT DISTINCT ON (s.symbol)
-            s.symbol, s.emoji, s.direction, s.entry, s.sl, s.tp1, s.tp2, s.rr, s.status, s.created_at
-        FROM symbol_signals s
-        INNER JOIN (
-            SELECT DISTINCT unnest(string_to_array(symbols, ',')) AS symbol 
-            FROM active_watches
-        ) w ON TRIM(s.symbol) = TRIM(w.symbol)
-        ORDER BY s.symbol, s.created_at DESC
-        """
+        SELECT DISTINCT ON (UPPER(TRIM(symbol)))
+            symbol, emoji, direction, entry, sl, tp1, tp2, rr, status, created_at
+        FROM symbol_signals
+        WHERE UPPER(TRIM(symbol)) = ANY(%s)
+        ORDER BY UPPER(TRIM(symbol)), created_at DESC
+        """,
+        (active_symbols,)
     )
     
     cards: List[Dict[str, str]] = []
     for row in rows:
         card_time = (pd.to_datetime(row["created_at"]) + pd.Timedelta(hours=1)) if row["created_at"] else None
         cards.append({
-            "symbol": row["symbol"],
+            "symbol": row["symbol"].strip().upper(),
             "emoji": row["emoji"],
             "direction": row["direction"],
             "entry": row.get("entry") or "-",
@@ -464,7 +467,7 @@ with tab_candles:
             """
             SELECT bar_time, open, high, low, close, volume
             FROM ohlc_bars
-            WHERE symbol = %s AND timeframe = %s
+            WHERE UPPER(TRIM(symbol)) = UPPER(TRIM(%s)) AND timeframe = %s
             ORDER BY bar_time ASC
             LIMIT 300
             """,
@@ -502,10 +505,10 @@ with tab_compare:
     if SYMBOLS:
         rows = run_query(
             """
-            SELECT DISTINCT ON (symbol) symbol, last_price, rsi_14, ema_20, ema_50, atr_14, created_at 
+            SELECT DISTINCT ON (UPPER(TRIM(symbol))) symbol, last_price, rsi_14, ema_20, ema_50, atr_14, created_at 
             FROM technical_snapshots 
-            WHERE timeframe = %s AND symbol = ANY(%s)
-            ORDER BY symbol, created_at DESC
+            WHERE timeframe = %s AND UPPER(TRIM(symbol)) = ANY(%s)
+            ORDER BY UPPER(TRIM(symbol)), created_at DESC
             """,
             (comp_tf, SYMBOLS)
         )
@@ -547,7 +550,7 @@ with tab_ai:
         
         if st.button("🔍 جلب التقرير"):
             reports = run_query(
-                "SELECT report_text, created_at FROM ai_reports WHERE analysis_type = %s AND symbols LIKE %s ORDER BY created_at DESC LIMIT 1",
+                "SELECT report_text, created_at FROM ai_reports WHERE analysis_type = %s AND UPPER(symbols) LIKE %s ORDER BY created_at DESC LIMIT 1",
                 (q_type, f"%{q_sym}%")
             )
             if reports:
