@@ -117,7 +117,7 @@ def get_conn():
     return psycopg2.connect(**kwargs)
 
 def ensure_indexes_exist():
-    """إنشاء الفهارس تلقائياً داخل قاعدة البيانات لضمان السرعة الفائقة لعيام الاستعلام"""
+    """إنشاء الفهارس تلقائياً داخل قاعدة البيانات لضمان السرعة الفائقة للاستعلامات"""
     queries = [
         """
         CREATE INDEX IF NOT EXISTS idx_snapshots_sym_tf_created 
@@ -135,9 +135,8 @@ def ensure_indexes_exist():
                     cur.execute(q)
             conn.commit()
     except Exception:
-        pass  # التجاوز عند عدم توفر صلاحيات الكتابة أو وجود الفهرس مسبقاً
+        pass
 
-# تنفيذ التأكد من الفهارس تلقائياً عند بدء تشغيل الكود
 ensure_indexes_exist()
 
 def run_query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
@@ -151,13 +150,13 @@ def run_query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
         return []
 
 def get_known_symbols() -> List[str]:
-    """جلب الأزواج المفعلة والمختارة عبر تلجرام فقط والموجودة في جدول active_watches"""
+    """جلب الأزواج المفعلة والمختارة عبر تلجرام فقط من جدول active_watches"""
     try:
         rows = run_query("SELECT DISTINCT unnest(string_to_array(symbols, ',')) AS symbol FROM active_watches")
         symbols = sorted({r["symbol"].strip() for r in rows if r.get("symbol") and r["symbol"].strip()})
-        return symbols if symbols else ["EURUSD", "XAUUSD", "BTCUSD"]
+        return symbols if symbols else []
     except Exception:
-        return ["EURUSD", "XAUUSD", "BTCUSD"]
+        return []
 
 def get_known_timeframes() -> List[str]:
     try:
@@ -206,7 +205,6 @@ def fetch_indicator_history(symbol: str, timeframe: str, limit: int = 300) -> pd
     )
     df = pd.DataFrame(rows)
     if not df.empty and "created_at" in df.columns:
-        # إضافة ساعة واحدة (+1 Hour) للتوافق التام مع GMT+1
         df["created_at"] = pd.to_datetime(df["created_at"]) + pd.Timedelta(hours=1)
     return df
 
@@ -239,21 +237,25 @@ def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300
     return price_df, points
 
 def fetch_latest_signal_cards() -> List[Dict[str, str]]:
-    """آخر توصية فقط لكل زوج من الأزواج المفعلة في active_watches."""
+    """جلب أحدث إشارة لكل زوج من الأزواج المفعلة حنياً فقط عبر active_watches"""
     active_symbols = get_known_symbols()
     if not active_symbols:
         return []
 
+    # ربط الجدولين لمطابقة الأزواج المفعلة حصراً عبر INNER JOIN
     rows = run_query(
         """
-        SELECT DISTINCT ON (symbol)
-            symbol, emoji, direction, entry, sl, tp1, tp2, rr, status, created_at
-        FROM symbol_signals
-        WHERE symbol = ANY(%s)
-        ORDER BY symbol, created_at DESC
-        """,
-        (active_symbols,)
+        SELECT DISTINCT ON (s.symbol)
+            s.symbol, s.emoji, s.direction, s.entry, s.sl, s.tp1, s.tp2, s.rr, s.status, s.created_at
+        FROM symbol_signals s
+        INNER JOIN (
+            SELECT DISTINCT unnest(string_to_array(symbols, ',')) AS symbol 
+            FROM active_watches
+        ) w ON TRIM(s.symbol) = TRIM(w.symbol)
+        ORDER BY s.symbol, s.created_at DESC
+        """
     )
+    
     cards: List[Dict[str, str]] = []
     for row in rows:
         card_time = (pd.to_datetime(row["created_at"]) + pd.Timedelta(hours=1)) if row["created_at"] else None
@@ -314,7 +316,7 @@ tab_signals, tab_points, tab_charts, tab_candles, tab_compare, tab_ai = st.tabs(
 
 # ----- TAB 1: التوصيات الحية (Signal Cards) -----
 with tab_signals:
-    st.subheader("آخر إشارات التداول المولدّة")
+    st.subheader("آخر إشارات التداول للرموز المفعلة فقط")
     cards = fetch_latest_signal_cards()
     if cards:
         cols = st.columns(3)
@@ -354,140 +356,145 @@ with tab_signals:
                     unsafe_allow_html=True
                 )
     else:
-        st.info("لا توجد إشارات حية مخزنة للأزواج المحددة حالياً.")
+        st.info("لا توجد إشارات حية للأزواج المفعلة حالياً.")
 
-# ----- TAB 2: نقاط التوصيات الملونة على مسار السعر والزمن -----
+# ----- TAB 2: نقاط التوصيات على مسار السعر والزمن -----
 with tab_points:
     st.subheader("تتبع نقاط الإشارات الصادرة على مسار السعر والزمن")
-    col_p1, col_p2 = st.columns(2)
-    p_sym = col_p1.selectbox("اختر الزوج:", SYMBOLS, key="pts_sym")
-    p_tf = col_p2.selectbox("اختر الإطار الزمني:", TIMEFRAMES, key="pts_tf")
+    if SYMBOLS:
+        col_p1, col_p2 = st.columns(2)
+        p_sym = col_p1.selectbox("اختر الزوج:", SYMBOLS, key="pts_sym")
+        p_tf = col_p2.selectbox("اختر الإطار الزمني:", TIMEFRAMES, key="pts_tf")
 
-    price_df, points = fetch_price_with_signal_points(p_sym, p_tf)
-    if not price_df.empty:
-        fig_pts = go.Figure()
+        price_df, points = fetch_price_with_signal_points(p_sym, p_tf)
+        if not price_df.empty:
+            fig_pts = go.Figure()
 
-        fig_pts.add_trace(go.Scatter(
-            x=price_df["created_at"],
-            y=price_df["last_price"],
-            name="خط السعر",
-            line=dict(color="#ffffff", width=2),
-            hoverinfo="x+y"
-        ))
+            fig_pts.add_trace(go.Scatter(
+                x=price_df["created_at"],
+                y=price_df["last_price"],
+                name="خط السعر",
+                line=dict(color="#ffffff", width=2),
+                hoverinfo="x+y"
+            ))
 
-        color_map = {"🟢": "#0ecb81", "🔴": "#f6465d", "⚪": "#848e9c"}
-        for emoji, label in [("🟢", "إشارة شراء (LONG)"), ("🔴", "إشارة بيع (SHORT)"), ("⚪", "إشارة حياد")]:
-            pts = [p for p in points if p["emoji"] == emoji]
-            if pts:
-                fig_pts.add_trace(go.Scatter(
-                    x=[p["x"] for p in pts],
-                    y=[p["y"] for p in pts],
-                    mode="markers",
-                    name=label,
-                    marker=dict(
-                        color=color_map[emoji],
-                        size=14,
-                        symbol="circle",
-                        line=dict(width=2, color="#000000")
-                    ),
-                    hoverinfo="text",
-                    text=[f"إشارة {label} عند سعر {p['y']} — الحالة: {p.get('status', 'pending')}" for p in pts]
-                ))
+            color_map = {"🟢": "#0ecb81", "🔴": "#f6465d", "⚪": "#848e9c"}
+            for emoji, label in [("🟢", "إشارة شراء (LONG)"), ("🔴", "إشارة بيع (SHORT)"), ("⚪", "إشارة حياد")]:
+                pts = [p for p in points if p["emoji"] == emoji]
+                if pts:
+                    fig_pts.add_trace(go.Scatter(
+                        x=[p["x"] for p in pts],
+                        y=[p["y"] for p in pts],
+                        mode="markers",
+                        name=label,
+                        marker=dict(
+                            color=color_map[emoji],
+                            size=14,
+                            symbol="circle",
+                            line=dict(width=2, color="#000000")
+                        ),
+                        hoverinfo="text",
+                        text=[f"إشارة {label} عند سعر {p['y']} — الحالة: {p.get('status', 'pending')}" for p in pts]
+                    ))
 
-        fig_pts.update_layout(
-            title=f"خريطة التوصيات الصادرة لـ {p_sym} ({p_tf})",
-            xaxis_title="الزمن (Time)",
-            yaxis_title="السعر (Price)",
-            template="plotly_dark",
-            paper_bgcolor="#181a20",
-            plot_bgcolor="#181a20",
-            height=550,
-            margin=dict(l=10, r=10, t=50, b=10),
-            legend=dict(orientation="h", y=1.05, x=0.1)
-        )
-        st.plotly_chart(fig_pts, use_container_width=True)
+            fig_pts.update_layout(
+                title=f"خريطة التوصيات الصادرة لـ {p_sym} ({p_tf})",
+                xaxis_title="الزمن (Time)",
+                yaxis_title="السعر (Price)",
+                template="plotly_dark",
+                paper_bgcolor="#181a20",
+                plot_bgcolor="#181a20",
+                height=550,
+                margin=dict(l=10, r=10, t=50, b=10),
+                legend=dict(orientation="h", y=1.05, x=0.1)
+            )
+            st.plotly_chart(fig_pts, use_container_width=True)
+        else:
+            st.warning("لا توجد بيانات لقطات سعر كافية لعرض الشارت.")
     else:
-        st.warning("لا توجد بيانات لقطات سعر كافية لعرض الشارت.")
+        st.warning("لا توجد أزواج مفعلة حالياً.")
 
-# ----- TAB 3: الشارت المدمج الاحترافي (Combined Chart) -----
+# ----- TAB 3: الشارت المدمج -----
 with tab_charts:
     st.subheader("التحليل الفني الشامل وحركة السعر")
-    col_a, col_b = st.columns([1, 1])
-    s_sym = col_a.selectbox("اختر الزوج:", SYMBOLS, key="ch_sym")
-    s_tf = col_b.selectbox("اختر الإطار الزمني:", TIMEFRAMES, key="ch_tf")
-    
-    df_chart = fetch_indicator_history(s_sym, s_tf)
-    if not df_chart.empty:
-        fig = make_subplots(
-            rows=2, cols=1, 
-            shared_xaxes=True, 
-            vertical_spacing=0.05, 
-            row_heights=[0.7, 0.3],
-            subplot_titles=(f"سعر {s_sym} ومتوسطات EMA", "مؤشر القوة النسبية RSI(14)")
-        )
+    if SYMBOLS:
+        col_a, col_b = st.columns([1, 1])
+        s_sym = col_a.selectbox("اختر الزوج:", SYMBOLS, key="ch_sym")
+        s_tf = col_b.selectbox("اختر الإطار الزمني:", TIMEFRAMES, key="ch_tf")
+        
+        df_chart = fetch_indicator_history(s_sym, s_tf)
+        if not df_chart.empty:
+            fig = make_subplots(
+                rows=2, cols=1, 
+                shared_xaxes=True, 
+                vertical_spacing=0.05, 
+                row_heights=[0.7, 0.3],
+                subplot_titles=(f"سعر {s_sym} ومتوسطات EMA", "مؤشر القوة النسبية RSI(14)")
+            )
 
-        fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["last_price"], name="السعر", line=dict(color="#ffffff", width=2)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["ema_20"], name="EMA 20", line=dict(color="#f0b90b", width=1.5)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["ema_50"], name="EMA 50", line=dict(color="#e040fb", width=1.5)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["last_price"], name="السعر", line=dict(color="#ffffff", width=2)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["ema_20"], name="EMA 20", line=dict(color="#f0b90b", width=1.5)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["ema_50"], name="EMA 50", line=dict(color="#e040fb", width=1.5)), row=1, col=1)
 
-        fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["rsi_14"], name="RSI", line=dict(color="#29b6f6", width=1.5)), row=2, col=1)
-        fig.add_hline(y=70, row=2, col=1, line_dash="dash", line_color="#f6465d", opacity=0.5)
-        fig.add_hline(y=30, row=2, col=1, line_dash="dash", line_color="#0ecb81", opacity=0.5)
+            fig.add_trace(go.Scatter(x=df_chart["created_at"], y=df_chart["rsi_14"], name="RSI", line=dict(color="#29b6f6", width=1.5)), row=2, col=1)
+            fig.add_hline(y=70, row=2, col=1, line_dash="dash", line_color="#f6465d", opacity=0.5)
+            fig.add_hline(y=30, row=2, col=1, line_dash="dash", line_color="#0ecb81", opacity=0.5)
 
-        fig.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="#181a20",
-            plot_bgcolor="#181a20",
-            height=580,
-            margin=dict(l=10, r=10, t=40, b=10),
-            legend=dict(orientation="h", y=1.02, x=0.1)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(
+                template="plotly_dark",
+                paper_bgcolor="#181a20",
+                plot_bgcolor="#181a20",
+                height=580,
+                margin=dict(l=10, r=10, t=40, b=10),
+                legend=dict(orientation="h", y=1.02, x=0.1)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("لا توجد أزواج مفعلة حالياً.")
 
 # ----- TAB 4: الشموع اليابانية (OHLC) -----
 with tab_candles:
     st.subheader("شموع OHLC الفعلية المخزَّنة من cTrader")
-    col_o1, col_o2 = st.columns(2)
-    o_sym = col_o1.selectbox("اختر الزوج:", SYMBOLS, key="ohlc_sym")
-    o_tf = col_o2.selectbox("اختر الإطار الزمني:", TIMEFRAMES, key="ohlc_tf")
+    if SYMBOLS:
+        col_o1, col_o2 = st.columns(2)
+        o_sym = col_o1.selectbox("اختر الزوج:", SYMBOLS, key="ohlc_sym")
+        o_tf = col_o2.selectbox("اختر الإطار الزمني:", TIMEFRAMES, key="ohlc_tf")
 
-    ohlc_rows = run_query(
-        """
-        SELECT bar_time, open, high, low, close, volume
-        FROM ohlc_bars
-        WHERE symbol = %s AND timeframe = %s
-        ORDER BY bar_time ASC
-        LIMIT 300
-        """,
-        (o_sym, o_tf)
-    )
-    if ohlc_rows:
-        df_ohlc = pd.DataFrame(ohlc_rows)
-        fig_ohlc = go.Figure(data=[go.Candlestick(
-            x=df_ohlc["bar_time"],
-            open=df_ohlc["open"], high=df_ohlc["high"],
-            low=df_ohlc["low"], close=df_ohlc["close"],
-            increasing_line_color="#0ecb81", decreasing_line_color="#f6465d",
-            name=o_sym
-        )])
-        fig_ohlc.update_layout(
-            title=f"شموع {o_sym} ({o_tf}) — بيانات حقيقية من cTrader",
-            template="plotly_dark",
-            paper_bgcolor="#181a20",
-            plot_bgcolor="#181a20",
-            height=580,
-            xaxis_rangeslider_visible=False,
-            margin=dict(l=10, r=10, t=40, b=10),
+        ohlc_rows = run_query(
+            """
+            SELECT bar_time, open, high, low, close, volume
+            FROM ohlc_bars
+            WHERE symbol = %s AND timeframe = %s
+            ORDER BY bar_time ASC
+            LIMIT 300
+            """,
+            (o_sym, o_tf)
         )
-        st.plotly_chart(fig_ohlc, use_container_width=True)
+        if ohlc_rows:
+            df_ohlc = pd.DataFrame(ohlc_rows)
+            fig_ohlc = go.Figure(data=[go.Candlestick(
+                x=df_ohlc["bar_time"],
+                open=df_ohlc["open"], high=df_ohlc["high"],
+                low=df_ohlc["low"], close=df_ohlc["close"],
+                increasing_line_color="#0ecb81", decreasing_line_color="#f6465d",
+                name=o_sym
+            )])
+            fig_ohlc.update_layout(
+                title=f"شموع {o_sym} ({o_tf}) — بيانات حقيقية من cTrader",
+                template="plotly_dark",
+                paper_bgcolor="#181a20",
+                plot_bgcolor="#181a20",
+                height=580,
+                xaxis_rangeslider_visible=False,
+                margin=dict(l=10, r=10, t=40, b=10),
+            )
+            st.plotly_chart(fig_ohlc, use_container_width=True)
+        else:
+            st.warning("لا توجد شموع OHLC مخزَّنة لهذا الزوج.")
     else:
-        st.warning(
-            "لا توجد شموع OHLC مخزَّنة بعد لهذا الزوج/الإطار. "
-            "هذه الميزة تعتمد على scheduled_ohlc_refresh في البوت — "
-            "تأكد أن الجدولة التلقائية (الداخلية أو Cloud Scheduler) تعمل فعلياً."
-        )
+        st.warning("لا توجد أزواج مفعلة حالياً.")
 
-# ----- TAB 5: مقارنة الأزواج المفعلة (Comparison Table) -----
+# ----- TAB 5: مقارنة الأزواج المفعلة -----
 with tab_compare:
     st.subheader("مقارنة مؤشرات السوق عبر الأزواج المراقبة")
     comp_tf = st.selectbox("الإطار الزمني للمقارنة:", TIMEFRAMES, key="cp_tf")
@@ -527,21 +534,26 @@ with tab_compare:
             st.dataframe(styled_df, use_container_width=True, height=400)
         else:
             st.warning("لا توجد بيانات لقطات متاحة للأزواج المحددة.")
+    else:
+        st.warning("لا توجد أزواج مفعلة حالياً.")
 
-# ----- TAB 6: تقارير الذكاء الاصطناعي المخزنة -----
+# ----- TAB 6: تقارير AI المخزنة -----
 with tab_ai:
     st.subheader("استعراض تقارير التحليل المتقدمة")
-    c_q1, c_q2 = st.columns(2)
-    q_type = c_q1.selectbox("نوع التقرير:", ["full", "forex_factory", "finnhub", "tradingview"])
-    q_sym = c_q2.selectbox("رمز الزوج:", SYMBOLS, key="ai_sym")
-    
-    if st.button("🔍 جلب التقرير"):
-        reports = run_query(
-            "SELECT report_text, created_at FROM ai_reports WHERE analysis_type = %s AND symbols LIKE %s ORDER BY created_at DESC LIMIT 1",
-            (q_type, f"%{q_sym}%")
-        )
-        if reports:
-            st.success(f"تاريخ التقرير: {reports[0]['created_at']}")
-            st.markdown(f'<div style="background:#181a20; padding:20px; border-radius:12px; border:1px solid #2b313a;">{reports[0]["report_text"]}</div>', unsafe_allow_html=True)
-        else:
-            st.warning("لم يتم العثور على تقرير مطابق للبيانات المحددة.")
+    if SYMBOLS:
+        c_q1, c_q2 = st.columns(2)
+        q_type = c_q1.selectbox("نوع التقرير:", ["full", "forex_factory", "finnhub", "tradingview"])
+        q_sym = c_q2.selectbox("رمز الزوج:", SYMBOLS, key="ai_sym")
+        
+        if st.button("🔍 جلب التقرير"):
+            reports = run_query(
+                "SELECT report_text, created_at FROM ai_reports WHERE analysis_type = %s AND symbols LIKE %s ORDER BY created_at DESC LIMIT 1",
+                (q_type, f"%{q_sym}%")
+            )
+            if reports:
+                st.success(f"تاريخ التقرير: {reports[0]['created_at']}")
+                st.markdown(f'<div style="background:#181a20; padding:20px; border-radius:12px; border:1px solid #2b313a;">{reports[0]["report_text"]}</div>', unsafe_allow_html=True)
+            else:
+                st.warning("لم يتم العثور على تقرير مطابق للبيانات المحددة.")
+    else:
+        st.warning("لا توجد أزواج مفعلة حالياً.")
