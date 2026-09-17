@@ -148,18 +148,19 @@ def run_query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
         return []
 
 def get_known_symbols() -> List[str]:
-    """استخراج وقسّم وتجريد كافة الرموز المراقبة فعلياً في active_watches"""
+    """استخراج وتنظيف كل الأزواج المفعلة من active_watches بدون أي تكرار أو أخطاء نصوص"""
     try:
         rows = run_query("SELECT symbols FROM active_watches")
         extracted_symbols = set()
         for r in rows:
-            if r.get("symbols"):
-                # تفكيك النصوص المفصولة بفاصلة أو مسافات
-                parts = re.split(r'[,; ]+', str(r["symbols"]))
-                for p in parts:
-                    clean_sym = p.strip().upper()
-                    if clean_sym:
-                        extracted_symbols.add(clean_sym)
+            val = r.get("symbols")
+            if val:
+                # تقسيم الرموز بأي فاصلة أو مسافة
+                items = re.split(r'[,;\s]+', str(val))
+                for item in items:
+                    clean = item.strip().upper()
+                    if clean:
+                        extracted_symbols.add(clean)
         return sorted(list(extracted_symbols))
     except Exception:
         return []
@@ -241,39 +242,41 @@ def fetch_price_with_signal_points(symbol: str, timeframe: str, limit: int = 300
             })
     return price_df, points
 
-def fetch_latest_signal_cards() -> List[Dict[str, str]]:
-    """تصفية حاسمة تضمن إرجاع التوصيات المخصصة للأزواج المفعلة في active_watches حصراً"""
-    active_symbols = get_known_symbols()
-    if not active_symbols:
+def fetch_latest_signal_cards(target_symbols: List[str]) -> List[Dict[str, str]]:
+    """جلب أحدث توصية لكل زوج مفعل مع الفلترة الحازمة داخل Python و SQL معا"""
+    if not target_symbols:
         return []
 
-    # استخدام التصفية المباشرة بناءً على قائمة العناصر النشطة المخزنة
+    # تنظيف القائمة الممررة
+    clean_targets = [s.strip().upper() for s in target_symbols if s.strip()]
+
     rows = run_query(
         """
         SELECT DISTINCT ON (UPPER(TRIM(symbol)))
             symbol, emoji, direction, entry, sl, tp1, tp2, rr, status, created_at
         FROM symbol_signals
-        WHERE UPPER(TRIM(symbol)) = ANY(%s)
         ORDER BY UPPER(TRIM(symbol)), created_at DESC
-        """,
-        (active_symbols,)
+        """
     )
     
     cards: List[Dict[str, str]] = []
     for row in rows:
-        card_time = (pd.to_datetime(row["created_at"]) + pd.Timedelta(hours=1)) if row["created_at"] else None
-        cards.append({
-            "symbol": row["symbol"].strip().upper(),
-            "emoji": row["emoji"],
-            "direction": row["direction"],
-            "entry": row.get("entry") or "-",
-            "sl": row.get("sl") or "-",
-            "tp1": row.get("tp1") or "-",
-            "tp2": row.get("tp2") or "-",
-            "rr": row.get("rr") or "-",
-            "status": row.get("status") or "pending",
-            "updated_at": card_time.strftime("%Y-%m-%d %H:%M") if card_time is not None else "-",
-        })
+        sym_clean = row["symbol"].strip().upper()
+        # فلترة حازمة في Python لضمان عدم ظهور أي زوج غير مفعل
+        if sym_clean in clean_targets:
+            card_time = (pd.to_datetime(row["created_at"]) + pd.Timedelta(hours=1)) if row["created_at"] else None
+            cards.append({
+                "symbol": sym_clean,
+                "emoji": row["emoji"],
+                "direction": row["direction"],
+                "entry": row.get("entry") or "-",
+                "sl": row.get("sl") or "-",
+                "tp1": row.get("tp1") or "-",
+                "tp2": row.get("tp2") or "-",
+                "rr": row.get("rr") or "-",
+                "status": row.get("status") or "pending",
+                "updated_at": card_time.strftime("%Y-%m-%d %H:%M") if card_time is not None else "-",
+            })
     return cards
 
 # ==================== 3. الهيكل الرئيسي للواجهة ====================
@@ -320,46 +323,51 @@ tab_signals, tab_points, tab_charts, tab_candles, tab_compare, tab_ai = st.tabs(
 # ----- TAB 1: التوصيات الحية (Signal Cards) -----
 with tab_signals:
     st.subheader("آخر إشارات التداول للرموز المفعلة فقط")
-    cards = fetch_latest_signal_cards()
-    if cards:
-        cols = st.columns(3)
-        for idx, c in enumerate(cards):
-            with cols[idx % 3]:
-                card_class = "buy-border" if c["emoji"] == "🟢" else "sell-border" if c["emoji"] == "🔴" else "neutral-border"
-                color_code = "#0ecb81" if c["emoji"] == "🟢" else "#f6465d" if c["emoji"] == "🔴" else "#848e9c"
+    
+    if SYMBOLS:
+        st.caption(f"📌 الأزواج المفعّلة حالياً عبر تلجرام ({len(SYMBOLS)}): `{', '.join(SYMBOLS)}`")
+        cards = fetch_latest_signal_cards(SYMBOLS)
+        if cards:
+            cols = st.columns(3)
+            for idx, c in enumerate(cards):
+                with cols[idx % 3]:
+                    card_class = "buy-border" if c["emoji"] == "🟢" else "sell-border" if c["emoji"] == "🔴" else "neutral-border"
+                    color_code = "#0ecb81" if c["emoji"] == "🟢" else "#f6465d" if c["emoji"] == "🔴" else "#848e9c"
 
-                status_map = {
-                    "pending": ("⏳ لم يُحسم بعد", "#848e9c"),
-                    "tp1_hit": ("✅ تحقق الهدف الأول", "#0ecb81"),
-                    "tp2_hit": ("✅✅ تحقق الهدف الثاني", "#0ecb81"),
-                    "sl_hit": ("❌ ضرب وقف الخسارة", "#f6465d"),
-                }
-                status_text, status_color = status_map.get(c.get("status", "pending"), status_map["pending"])
+                    status_map = {
+                        "pending": ("⏳ لم يُحسم بعد", "#848e9c"),
+                        "tp1_hit": ("✅ تحقق الهدف الأول", "#0ecb81"),
+                        "tp2_hit": ("✅✅ تحقق الهدف الثاني", "#0ecb81"),
+                        "sl_hit": ("❌ ضرب وقف الخسارة", "#f6465d"),
+                    }
+                    status_text, status_color = status_map.get(c.get("status", "pending"), status_map["pending"])
 
-                st.markdown(
-                    f"""
-                    <div class="signal-card {card_class}">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <h3 style="margin:0; color:{color_code}; font-size:20px;">{c['emoji']} {c['symbol']}</h3>
-                            <span style="background:{color_code}22; color:{color_code}; padding:4px 10px; border-radius:6px; font-weight:bold; font-size:12px;">{c['direction']}</span>
+                    st.markdown(
+                        f"""
+                        <div class="signal-card {card_class}">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <h3 style="margin:0; color:{color_code}; font-size:20px;">{c['emoji']} {c['symbol']}</h3>
+                                <span style="background:{color_code}22; color:{color_code}; padding:4px 10px; border-radius:6px; font-weight:bold; font-size:12px;">{c['direction']}</span>
+                            </div>
+                            <div style="margin-top:8px;">
+                                <span style="background:{status_color}22; color:{status_color}; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:600;">{status_text}</span>
+                            </div>
+                            <hr style="border-color:#2b313a; margin:12px 0;">
+                            <div style="font-size:14px; line-height:1.8;">
+                                <div><b>سعر الدخول:</b> <span style="color:#ffffff;">{c['entry']}</span></div>
+                                <div><b>وقف الخسارة (SL):</b> <span style="color:#f6465d;">{c['sl']}</span></div>
+                                <div><b>الاهداف (TP):</b> <span style="color:#0ecb81;">{c['tp1']}</span> / <span style="color:#0ecb81;">{c['tp2']}</span></div>
+                                <div><b>المخاطرة/العائد:</b> <span style="color:#f0b90b;">{c['rr']}</span></div>
+                            </div>
+                            <div style="margin-top:12px; font-size:11px; color:#848e9c; text-align:left;">⏱️ {c['updated_at']}</div>
                         </div>
-                        <div style="margin-top:8px;">
-                            <span style="background:{status_color}22; color:{status_color}; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:600;">{status_text}</span>
-                        </div>
-                        <hr style="border-color:#2b313a; margin:12px 0;">
-                        <div style="font-size:14px; line-height:1.8;">
-                            <div><b>سعر الدخول:</b> <span style="color:#ffffff;">{c['entry']}</span></div>
-                            <div><b>وقف الخسارة (SL):</b> <span style="color:#f6465d;">{c['sl']}</span></div>
-                            <div><b>الاهداف (TP):</b> <span style="color:#0ecb81;">{c['tp1']}</span> / <span style="color:#0ecb81;">{c['tp2']}</span></div>
-                            <div><b>المخاطرة/العائد:</b> <span style="color:#f0b90b;">{c['rr']}</span></div>
-                        </div>
-                        <div style="margin-top:12px; font-size:11px; color:#848e9c; text-align:left;">⏱️ {c['updated_at']}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+                        """,
+                        unsafe_allow_html=True
+                    )
+        else:
+            st.info("لا توجد إشارات جديدة صالحة للأزواج المفعلة.")
     else:
-        st.info("لا توجد إشارات حية للأزواج المفعلة حالياً.")
+        st.warning("لم يتم العثور على أي أزواج مفعلة داخل جدول active_watches في قاعدة البيانات.")
 
 # ----- TAB 2: نقاط التوصيات على مسار السعر والزمن -----
 with tab_points:
