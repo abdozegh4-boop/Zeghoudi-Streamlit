@@ -10,6 +10,7 @@ from plotly.subplots import make_subplots
 import psycopg2
 import psycopg2.extras
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 # ==================== 1. إعداد الصفحة والتصميم الخاص (Custom CSS) ====================
 st.set_page_config(
@@ -96,6 +97,10 @@ DATABASE_URL = st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL", "")).str
 DB_CA_CERT_PEM = st.secrets.get("DB_CA_CERT_PEM", os.getenv("DB_CA_CERT_PEM", "")).strip()
 AUTO_ANALYSIS_INTERVAL_MINUTES = int(st.secrets.get("AUTO_ANALYSIS_INTERVAL_MINUTES", "10"))
 
+# التحديث التلقائي للوحة (بالثواني) — قابل للتعديل عبر Secret اسمه AUTO_REFRESH_SECONDS.
+AUTO_REFRESH_SECONDS = int(st.secrets.get("AUTO_REFRESH_SECONDS", os.getenv("AUTO_REFRESH_SECONDS", "20")))
+st_autorefresh(interval=AUTO_REFRESH_SECONDS * 1000, key="dashboard_auto_refresh")
+
 _CA_CERT_PATH: Optional[str] = None
 if DB_CA_CERT_PEM:
     _ca_file = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False)
@@ -148,14 +153,26 @@ def run_query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
         return []
 
 def get_known_symbols() -> List[str]:
-    """استخراج وتنظيف كل الأزواج المفعلة من active_watches بدون أي تكرار أو أخطاء نصوص"""
+    """
+    الأزواج المعروضة = فقط ما هو مُختار حالياً في تيليجرام (bot_runtime_state.selected_symbols)،
+    وهو نفس العمود الذي يحفظ فيه البوت اختيارك الحي عبر persist_runtime_state_from_memory.
+    """
+    try:
+        rows = run_query("SELECT selected_symbols FROM bot_runtime_state WHERE id = 1")
+        if rows and rows[0].get("selected_symbols"):
+            items = re.split(r'[,;\s]+', str(rows[0]["selected_symbols"]))
+            clean = sorted({s.strip().upper() for s in items if s.strip()})
+            if clean:
+                return clean
+    except Exception:
+        pass
+    # احتياط فقط: إن لم يوجد اختيار محفوظ بعد (أول تشغيل مثلاً)، استخدم كل ما وُجد تاريخياً في active_watches
     try:
         rows = run_query("SELECT symbols FROM active_watches")
         extracted_symbols = set()
         for r in rows:
             val = r.get("symbols")
             if val:
-                # تقسيم الرموز بأي فاصلة أو مسافة
                 items = re.split(r'[,;\s]+', str(val))
                 for item in items:
                     clean = item.strip().upper()
@@ -281,11 +298,18 @@ def fetch_latest_signal_cards(target_symbols: List[str]) -> List[Dict[str, str]]
 
 # ==================== 3. الهيكل الرئيسي للواجهة ====================
 
-st.markdown("""
+_last_refresh_str = datetime.now().strftime("%H:%M:%S")
+st.markdown(f"""
     <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0 25px 0;">
         <div>
             <h1 style="margin:0; font-size:28px; font-weight:800; color:#ffffff;">⚡ TRADING ANALYTICS PRO</h1>
             <p style="margin:0; color:#848e9c; font-size:14px;">نظام المراقبة والتحليل المباشر (Aiven Read-Only Sync)</p>
+        </div>
+        <div style="text-align:left;">
+            <span style="background:#0ecb8122; color:#0ecb81; padding:5px 12px; border-radius:8px; font-size:12px; font-weight:600;">
+                🔄 تحديث تلقائي كل {AUTO_REFRESH_SECONDS} ث
+            </span>
+            <p style="margin:4px 0 0 0; color:#848e9c; font-size:11px;">آخر تحديث: {_last_refresh_str}</p>
         </div>
     </div>
 """, unsafe_allow_html=True)
@@ -306,7 +330,7 @@ if status.get("db_ok"):
     with c3:
         st.markdown(f'<div class="metric-card"><div class="metric-title">عمر أحدث لقطة</div><div class="metric-value">{status.get("last_technical_age_min", "-")} دقيقة</div></div>', unsafe_allow_html=True)
     with c4:
-        st.markdown(f'<div class="metric-card"><div class="metric-title">الأزواج المراقبة</div><div class="metric-value">{status.get("active_watches_count", 0)} أزواج</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-title">الأزواج المختارة (تيليجرام)</div><div class="metric-value">{status.get("active_watches_count", 0)} أزواج</div></div>', unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -367,7 +391,7 @@ with tab_signals:
         else:
             st.info("لا توجد إشارات جديدة صالحة للأزواج المفعلة.")
     else:
-        st.warning("لم يتم العثور على أي أزواج مفعلة داخل جدول active_watches في قاعدة البيانات.")
+        st.warning("⚠️ لم تختر أي زوج بعد من قائمة تيليجرام — اذهب للبوت واختر الأزواج، ثم ستظهر هنا تلقائياً.")
 
 # ----- TAB 2: نقاط التوصيات على مسار السعر والزمن -----
 with tab_points:
